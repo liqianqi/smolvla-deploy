@@ -1,0 +1,29 @@
+# ---- 导出产物 (由 export_*.py 生成, 体积大, 不入库) ----
+artifacts/
+*.onnx
+*.onnx.data
+*.bin
+# TensorRT engine 缓存
+*.engine
+*.trt
+trt_cache/
+
+# ---- C++ 构建 ----
+cpp/build/
+cpp/compile_commands.json
+# ONNX Runtime / TensorRT 预编译包
+third_party/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+.DS_Store
+*.swp

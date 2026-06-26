@@ -1,0 +1,8 @@
+# SmolVLA 部署 / 推理优化项目依赖
+# 注意:torch 与 lerobot 复用 /home/ubuntu/smolvla/.venv 里已装好的版本,
+# 这里只列出本项目额外需要的导出/验证工具.
+onnx>=1.22
+onnxruntime>=1.27
+# TensorRT 引擎构建(可选,后续阶段使用):
+# tensorrt              # 由 NVIDIA 提供,建议用 NGC 容器或 pip 官方源安装
+# onnxruntime-gpu       # 若要用 ORT 的 CUDA/TensorRT EP 做 GPU 推理
