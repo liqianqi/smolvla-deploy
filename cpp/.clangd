@@ -1,0 +1,9 @@
+# clangd 头文件解析补充: .hpp 没有 compile_commands 条目, 独立打开时需要这些路径
+CompileFlags:
+  Add:
+    - -I/usr/include/opencv4
+    - -I/home/ubuntu/AI/smolvla-deploy/cpp/include
+    - -I/home/ubuntu/AI/smolvla-deploy/third_party/onnxruntime/include
+    - -I/home/ubuntu/robstride_dynamics_arm/driver/include
+    - -I/home/ubuntu/robstride_dynamics_arm/lib_common/include
+    - -std=c++17
