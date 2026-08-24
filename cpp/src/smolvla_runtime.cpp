@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <random>
@@ -46,6 +47,13 @@ SmolVLARuntime::SmolVLARuntime(const RuntimeConfig& cfg)
 {
     prefix_len_ = d_.prefix_len();
 
+    // TensorRT EP 用 create_directory 写缓存,中间目录不存在会抛 filesystem_error.
+    if (!cfg_.trt_cache_dir.empty())
+    {
+        std::filesystem::create_directories(std::filesystem::path(cfg_.trt_cache_dir) / "fp32");
+        std::filesystem::create_directories(std::filesystem::path(cfg_.trt_cache_dir) / "fp16");
+    }
+
     // 每个引擎可独立选 FP16/FP32(定位精度敏感引擎、以及混合精度部署用).
     // 注意 TRT 引擎缓存不区分精度标志, 必须按精度拆缓存目录, 否则会加载错的引擎.
     auto engine_fp16 = [&](const char* name)
@@ -68,7 +76,9 @@ SmolVLARuntime::SmolVLARuntime(const RuntimeConfig& cfg)
             trt.trt_fp16_enable = fp16 ? 1 : 0;
             cache_dir = cfg_.trt_cache_dir.empty()
                             ? std::string()
-                            : cfg_.trt_cache_dir + (fp16 ? "/fp16" : "/fp32");
+                            : (std::filesystem::absolute(cfg_.trt_cache_dir) /
+                               (fp16 ? "fp16" : "fp32"))
+                                  .string();
             trt.trt_engine_cache_enable = cache_dir.empty() ? 0 : 1;
             trt.trt_engine_cache_path = cache_dir.c_str();
             so.AppendExecutionProvider_TensorRT(trt);

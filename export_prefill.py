@@ -24,9 +24,9 @@ import numpy as np
 import torch
 from torch import nn
 
+from dummy_batch import load_export_raw_batch
 from lerobot.configs.policies import PreTrainedConfig
-from lerobot.datasets import LeRobotDataset
-from lerobot.policies import make_pre_post_processors
+from lerobot.policies.factory import make_pre_post_processors
 from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy, make_att_2d_masks
 from lerobot.utils.constants import OBS_LANGUAGE_ATTENTION_MASK, OBS_LANGUAGE_TOKENS
 
@@ -60,12 +60,6 @@ class PrefillWrapper(nn.Module):
         return keys, values
 
 
-def add_batch_dim(value):
-    if isinstance(value, torch.Tensor):
-        return value.unsqueeze(0)
-    return [value]
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--policy-path", type=Path, default=DEFAULT_POLICY_PATH)
@@ -89,15 +83,7 @@ def main() -> None:
     preprocessor, _ = make_pre_post_processors(cfg, pretrained_path=str(args.policy_path))
 
     print("[2/5] 取一帧观测并构造 prefix 嵌入")
-    dataset = LeRobotDataset(args.repo_id, root=args.dataset_root)
-    sample = dataset[0]
-    raw_batch = {
-        "task": sample["task"],
-        "observation.state": sample["observation.state"],
-        "observation.images.image": sample["observation.images.image"],
-        "observation.images.wrist_image": sample["observation.images.wrist_image"],
-    }
-    raw_batch = {k: add_batch_dim(v) for k, v in raw_batch.items()}
+    raw_batch = load_export_raw_batch(args.policy_path, args.dataset_root, args.repo_id)
     batch = preprocessor(raw_batch)
 
     model = policy.model

@@ -29,8 +29,10 @@ constexpr uint8_t kTypeStatus = 2;  // OPERATION_STATUS
 constexpr uint8_t kTypeEnable = 3;
 constexpr uint8_t kTypeDisable = 4;
 constexpr uint8_t kTypeReadParam = 17;
+constexpr uint8_t kTypeWriteParam = 18;
 constexpr uint8_t kTypeFault = 21;
 constexpr uint16_t kParamMeasuredPos = 0x3016;  // mechPos, float32
+constexpr uint16_t kParamTorqueLimit = 0x700B;  // limit_torque, float32
 
 // rs-00 的 MIT 帧量程
 constexpr double kMitPosRange = 4.0 * M_PI;  // rad
@@ -161,6 +163,13 @@ class RobstrideBus
         throw std::runtime_error("电机 " + std::to_string(dev_id) + " 状态帧超时");
     }
 
+    void WriteParamF32(uint8_t dev_id, uint16_t index, float value)
+    {
+        uint8_t d[8] = {static_cast<uint8_t>(index & 0xFF), static_cast<uint8_t>(index >> 8), 0, 0};
+        std::memcpy(d + 4, &value, 4);  // float32 LE
+        Transmit(kTypeWriteParam, kHostId, dev_id, d, 8);
+    }
+
     // 参数读(READ_PARAMETER 0x11): 返回 float32 值(电机原始坐标)
     double ReadParamF32(uint8_t dev_id, uint16_t index, double timeout_sec = 0.75)
     {
@@ -218,10 +227,13 @@ ElA3Arm::ElA3Arm(const ArmConfig& cfg) : cfg_(cfg)
     cmd_q_.assign(6, 0.0);
 
     // 上电清 fault latch: disable x2 -> enable(复刻 Python ElA3RobstrideRobot)
+    std::vector<uint8_t> all_ids = cfg_.motor_ids;
+    if (cfg_.gripper_id > 0) all_ids.push_back(cfg_.gripper_id);
+
     std::this_thread::sleep_for(300ms);
     for (int round = 0; round < 2; ++round)
     {
-        for (uint8_t id : cfg_.motor_ids)
+        for (uint8_t id : all_ids)
         {
             bus_->Disable(id);
             std::this_thread::sleep_for(20ms);
@@ -229,7 +241,7 @@ ElA3Arm::ElA3Arm(const ArmConfig& cfg) : cfg_(cfg)
         std::this_thread::sleep_for(300ms);
     }
     bus_->FlushRx();
-    for (uint8_t id : cfg_.motor_ids)
+    for (uint8_t id : all_ids)
     {
         bus_->Enable(id);
         std::this_thread::sleep_for(20ms);
@@ -237,11 +249,27 @@ ElA3Arm::ElA3Arm(const ArmConfig& cfg) : cfg_(cfg)
     std::this_thread::sleep_for(100ms);
     bus_->FlushRx();
 
+    if (cfg_.gripper_id > 0)
+    {
+        try
+        {
+            bus_->WriteParamF32(cfg_.gripper_id, kParamTorqueLimit,
+                                static_cast<float>(cfg_.gripper_torque_limit));
+            std::printf("[ARM] 夹爪力矩上限 = %.2f N·m (id=%u)\n", cfg_.gripper_torque_limit,
+                        cfg_.gripper_id);
+        }
+        catch (const std::exception& e)
+        {
+            std::printf("[ARM] WARN: 写夹爪力矩上限失败: %s\n", e.what());
+        }
+    }
+
     // 读初始关节角(参数读, 不发 MIT 帧避免扰动)
     for (int i = 0; i < 6; ++i) last_q_[i] = ReadJoint(i);
+    if (cfg_.gripper_id > 0) last_grip_ = GetGripperAngle();
     std::printf("[ARM] 初始化完成 (%s), 当前关节角:", cfg_.can_iface.c_str());
     for (double v : last_q_) std::printf(" %+.3f", v);
-    std::printf(" rad\n");
+    std::printf("  grip=%+.3f rad\n", last_grip_);
 }
 
 ElA3Arm::~ElA3Arm()
@@ -257,7 +285,8 @@ double ElA3Arm::ReadJoint(int i)
     {
         // 有命令目标后: 重发带增益的 MIT 控制帧并读状态帧(避免零力矩探测导致释放)
         const double raw_cmd = cmd_q_[i] * cfg_.direction[i] + cfg_.homing_offset[i];
-        bus_->WriteMitFrame(id, raw_cmd, 0, cfg_.kp, cfg_.kd, 0);
+        const double ff = cfg_.gravity_torques[i] * cfg_.direction[i];
+        bus_->WriteMitFrame(id, raw_cmd, 0, cfg_.kp, cfg_.kd, ff);
         raw = bus_->ReadStatusPosition(id);
     }
     else
@@ -269,6 +298,8 @@ double ElA3Arm::ReadJoint(int i)
 
 std::vector<double> ElA3Arm::GetJointPositions()
 {
+    // 先清掉积压的旧状态帧, 保证下面读到的是本次探测触发的新鲜回帧
+    bus_->FlushRx();
     for (int i = 0; i < 6; ++i)
     {
         try
@@ -282,6 +313,45 @@ std::vector<double> ElA3Arm::GetJointPositions()
         }
     }
     return last_q_;
+}
+
+double ElA3Arm::GetGripperAngle()
+{
+    if (cfg_.gripper_id == 0) return last_grip_;
+    try
+    {
+        bus_->FlushRx();  // 同 GetJointPositions: 只认新鲜回帧
+        double raw;
+        if (has_grip_cmd_)
+        {
+            // 与手臂 ReadJoint 相同: 读的时候重发 MIT, 否则推理间隙夹爪会卸力张开.
+            const double raw_cmd = cmd_grip_ * cfg_.gripper_direction + cfg_.gripper_homing_offset;
+            bus_->WriteMitFrame(cfg_.gripper_id, raw_cmd, 0, cfg_.gripper_kp, cfg_.gripper_kd, 0);
+            raw = bus_->ReadStatusPosition(cfg_.gripper_id);
+        }
+        else
+        {
+            raw = bus_->ReadParamF32(cfg_.gripper_id, kParamMeasuredPos);
+        }
+        last_grip_ = (raw - cfg_.gripper_homing_offset) * cfg_.gripper_direction;
+    }
+    catch (const std::exception& e)
+    {
+        std::printf("[ARM] WARN: 读夹爪失败, 保留上次值 %+.4f (%s)\n", last_grip_, e.what());
+    }
+    return last_grip_;
+}
+
+void ElA3Arm::CommandGripper(double angle_urdf)
+{
+    if (cfg_.gripper_id == 0) return;
+    const double clipped =
+        std::clamp(angle_urdf, cfg_.gripper_angle_min, cfg_.gripper_angle_max);
+    const double raw = clipped * cfg_.gripper_direction + cfg_.gripper_homing_offset;
+    bus_->WriteMitFrame(cfg_.gripper_id, raw, 0, cfg_.gripper_kp, cfg_.gripper_kd, 0);
+    cmd_grip_ = clipped;
+    has_grip_cmd_ = true;
+    bus_->FlushRx();  // 消费回帧, 防止积压(见 ServoJoint)
 }
 
 std::vector<double> ElA3Arm::ClipToLimits(const std::vector<double>& q) const
@@ -299,10 +369,14 @@ void ElA3Arm::ServoJoint(const std::vector<double>& q_urdf, double kp, double kd
     for (int i = 0; i < 6; ++i)
     {
         const double raw = q_urdf[i] * cfg_.direction[i] + cfg_.homing_offset[i];
-        bus_->WriteMitFrame(cfg_.motor_ids[i], raw, 0, kp, kd, 0);
+        const double ff = cfg_.gravity_torques[i] * cfg_.direction[i];
+        bus_->WriteMitFrame(cfg_.motor_ids[i], raw, 0, kp, kd, ff);
     }
     cmd_q_ = q_urdf;
     has_command_ = true;
+    // 每条 MIT 都触发一条状态回帧. 不消费会在内核 rcvbuf 积压成秒级旧数据,
+    // 之后 ReadStatusPosition 从队头读到的"实测角"全是过期回声(模型吃旧观测).
+    bus_->FlushRx();
 }
 
 std::vector<double> ElA3Arm::ManualInitAndHold()
@@ -387,9 +461,20 @@ std::vector<double> ElA3Arm::ManualInitAndHold()
                 for (int i = 0; i < 6; ++i)
                 {
                     const double raw = hold_q[i] * cfg_.direction[i] + cfg_.homing_offset[i];
-                    bus_->WriteMitFrame(cfg_.motor_ids[i], raw, 0, cfg_.hold_kp, cfg_.hold_kd, 0);
+                    const double ff = cfg_.gravity_torques[i] * cfg_.direction[i];
+                    bus_->WriteMitFrame(cfg_.motor_ids[i], raw, 0, cfg_.hold_kp, cfg_.hold_kd, ff);
                     std::this_thread::sleep_for(2ms);
                 }
+                if (cfg_.gripper_id > 0)
+                {
+                    const double raw =
+                        last_grip_ * cfg_.gripper_direction + cfg_.gripper_homing_offset;
+                    bus_->WriteMitFrame(cfg_.gripper_id, raw, 0, cfg_.gripper_kp, cfg_.gripper_kd,
+                                        0);
+                }
+                // 加载模型/相机可能持续几十秒, hold 帧的回帧必须及时消费,
+                // 否则控制回路一开始读到的就是加载期间的陈旧位置.
+                bus_->FlushRx();
                 std::this_thread::sleep_until(t0 + dt);
             }
         });
@@ -424,9 +509,9 @@ void ElA3Arm::ExecuteJointAction(const std::vector<float>& action, double durati
                                  const std::atomic<bool>& stop)
 {
     const double ctrl_dt = 1.0 / cfg_.control_hz;
-    std::vector<double> q0 = GetJointPositions();
+    // 与 Python 一致: 从上次命令角插值.用实测角当 q0 会每步拽回当前姿态,到不了目标.
+    std::vector<double> q0 = has_command_ ? cmd_q_ : GetJointPositions();
 
-    // 目标 = clip(action[:6]) 且相对当前跳变不超过 max_dq_per_action(动作限幅)
     std::vector<double> q_target(6);
     for (int i = 0; i < 6; ++i) q_target[i] = action[i];
     q_target = ClipToLimits(q_target);
@@ -446,22 +531,35 @@ void ElA3Arm::ExecuteJointAction(const std::vector<float>& action, double durati
         std::printf("[SAFE] 动作跳变被限幅 max_dq_per_action=%.3f rad\n", cfg_.max_dq_per_action);
     }
 
-    // duration 内 control_hz 线性插值, 每 tick 相对当前限速下发
+    const double g0 = has_grip_cmd_ ? cmd_grip_ : last_grip_;
+    const double g_tgt =
+        action.size() >= 7
+            ? std::clamp(static_cast<double>(action[6]), cfg_.gripper_angle_min,
+                         cfg_.gripper_angle_max)
+            : g0;
+
     const int n = std::max(1, static_cast<int>(std::ceil(duration * cfg_.control_hz)));
     for (int i = 1; i <= n && !stop.load(); ++i)
     {
         const auto t0 = std::chrono::steady_clock::now();
         const double alpha = static_cast<double>(i) / n;
-        std::vector<double> cur = GetJointPositions();
         std::vector<double> next(6);
         for (int j = 0; j < 6; ++j)
         {
-            const double wp = (1.0 - alpha) * q0[j] + alpha * q_target[j];
-            const double step =
-                std::clamp(wp - cur[j], -cfg_.max_dq_per_tick, cfg_.max_dq_per_tick);
-            next[j] = cur[j] + step;
+            double wp = (1.0 - alpha) * q0[j] + alpha * q_target[j];
+            if (has_command_)
+            {
+                wp = cmd_q_[j] +
+                     std::clamp(wp - cmd_q_[j], -cfg_.max_dq_per_tick, cfg_.max_dq_per_tick);
+            }
+            next[j] = wp;
         }
         ServoJoint(ClipToLimits(next), cfg_.kp, cfg_.kd);
+        if (action.size() >= 7)
+        {
+            // 每个 tick 都发夹爪 MIT. 只在最后一拍发的话, 插值/推理间隙会卸力张开.
+            CommandGripper((1.0 - alpha) * g0 + alpha * g_tgt);
+        }
         std::this_thread::sleep_until(t0 + std::chrono::duration<double>(ctrl_dt));
     }
 }

@@ -1,7 +1,7 @@
 // SmolVLA C++ 实机部署入口:复刻 run_ela3_smolvla_inference.py --mode deploy 的闭环
 //
 //   RealSense(主视角) + USB(腕部) -> resize_with_pad 512 + [-1,1]
-//   6 关节角 + 夹爪标志 -> MEAN_STD 归一化 -> pad 32
+//   6 关节角 + 夹爪角(rad) -> MEAN_STD 归一化 -> pad 32
 //   lang_tokens.bin(tools/export_lang_tokens.py 离线导出)
 //        -> SmolVLARuntime(4 引擎 ONNX + TensorRT EP)
 //        -> 50 步 chunk -> 执行前 exec_horizon 步(0.2s/步 @30Hz 插值 + 限速)
@@ -10,6 +10,7 @@
 // 用法示例:
 //   ./smolvla_deploy --artifacts ../../artifacts              # 默认 can0 / USB 10
 //   ./smolvla_deploy --artifacts ../../artifacts --no-arm     # 无机械臂,只推理打印
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -44,20 +45,46 @@ void OnSigInt(int)
 struct DeployArgs
 {
     std::string artifacts = "../../artifacts";
-    std::string can_iface = "can0";
+    std::string can_iface = "can1";
     std::string rs_serial;
     int usb_device = 10;
     bool swap_cameras = false;
     bool no_arm = false;
     bool fake_cameras = false;  // 无相机硬件时用全黑帧冒烟测试
-    bool manual_init = true;    // 启动时零力矩+重力补偿手动摆位, Enter 后开始
-    // 与 Python 实机成功配置一致 (--exec_horizon 8 --action_dt 0.1):
-    // chunk 前几步几乎贴着当前位置, 只执行前 2 步会一直在轨迹起点打转
+    bool manual_init = true;    // 对应 Python --manual_init_before_model
+    // 与你那条能跑通的 Python 命令一致:
+    //   --exec_horizon 8 --action_dt 0.1 --control_hz 20
+    //   --action_filter 0.25 --max_dq_per_action 0.12
     int exec_horizon = 8;
     double action_dt = 0.1;
-    double control_hz = 30.0;
-    double max_dq_per_action = 0.25;  // 动作限幅: 单 action 相对当前最大跳变(rad)
-    double max_dq_per_tick = 0.08;    // 动作限幅: 每 30Hz tick 最大步长(rad)
+    double control_hz = 150.0;
+    double max_dq_per_action = 0.12;
+    double max_dq_per_tick = 0.08;  // Python MAX_DQ_PER_TICK, 无 CLI
+    int skip_chunk_head = 0;
+    double align_max_jump = 0.35;
+    int align_search = 12;  // Python _align_action_chunk 写死搜 12 步
+    double action_filter = 0.25;
+    // <0 表示跟 Python 一样, 全部用 action_filter. 显式传了才单独改.
+    double j1_filter = -1.0;
+    double j1_bias = 0.0;
+    double j3_filter = -1.0;
+    double j3_bias = 0.0;
+    double gripper_filter = 0.27;
+    double kp = 150.0;
+    double kd = 3.5;
+    int gripper_id = 7;
+    double gripper_kp = 8.0;
+    double gripper_kd = 0.4;
+    double gripper_init_angle = -0.55;
+    double gripper_open_extra = -0.18;  // Python DEFAULT_GRIPPER_OPEN_EXTRA
+    double grasp_j2_bias = 0.06;
+    double grasp_j3_bias = -0.04;
+    double grasp_j4_bias = -0.04;
+    double grasp_grip_bias = 0.18;
+    // Python 没有 lift. 默认 0=关掉, 要抬再显式传.
+    double lift_start = 0.50;
+    double lift_j2 = 0.0;
+    double lift_j3 = 0.0;
     std::array<double, 6> gravity_torques = {0, 1.2, -1.2, 0.1, 0, 0};
     int max_iters = -1;        // <0 表示不限
     std::string save_obs_dir;  // 非空: 每次推理把两路相机帧存到该目录(诊断用)
@@ -126,6 +153,50 @@ DeployArgs ParseArgs(int argc, char** argv)
             a.max_dq_per_action = std::stod(next());
         else if (k == "--max-dq-per-tick")
             a.max_dq_per_tick = std::stod(next());
+        else if (k == "--skip-chunk-head")
+            a.skip_chunk_head = std::stoi(next());
+        else if (k == "--align-max-jump")
+            a.align_max_jump = std::stod(next());
+        else if (k == "--align-search")
+            a.align_search = std::stoi(next());
+        else if (k == "--grasp-j2-bias")
+            a.grasp_j2_bias = std::stod(next());
+        else if (k == "--grasp-j3-bias")
+            a.grasp_j3_bias = std::stod(next());
+        else if (k == "--grasp-j4-bias")
+            a.grasp_j4_bias = std::stod(next());
+        else if (k == "--lift-start")
+            a.lift_start = std::stod(next());
+        else if (k == "--lift-j2")
+            a.lift_j2 = std::stod(next());
+        else if (k == "--lift-j3")
+            a.lift_j3 = std::stod(next());
+        else if (k == "--action-filter")
+            a.action_filter = std::stod(next());
+        else if (k == "--j1-filter")
+            a.j1_filter = std::stod(next());
+        else if (k == "--j1-bias")
+            a.j1_bias = std::stod(next());
+        else if (k == "--j3-filter")
+            a.j3_filter = std::stod(next());
+        else if (k == "--j3-bias")
+            a.j3_bias = std::stod(next());
+        else if (k == "--kp")
+            a.kp = std::stod(next());
+        else if (k == "--kd")
+            a.kd = std::stod(next());
+        else if (k == "--gripper-filter")
+            a.gripper_filter = std::stod(next());
+        else if (k == "--gripper-id")
+            a.gripper_id = std::stoi(next());
+        else if (k == "--no-gripper")
+            a.gripper_id = 0;
+        else if (k == "--gripper-kp")
+            a.gripper_kp = std::stod(next());
+        else if (k == "--gripper-kd")
+            a.gripper_kd = std::stod(next());
+        else if (k == "--gripper-open-extra")
+            a.gripper_open_extra = std::stod(next());
         else if (k == "--max-iters")
             a.max_iters = std::stoi(next());
         else if (k == "--save-obs")
@@ -151,7 +222,14 @@ DeployArgs ParseArgs(int argc, char** argv)
                 "          [--swap-cameras] [--no-arm] [--fake-cameras] [--no-manual-init]\n"
                 "          [--gravity-torques \"0,1.2,-1.2,0.1,0,0\"] [--exec-horizon N]\n"
                 "          [--action-dt S] [--control-hz HZ] [--max-dq-per-action RAD]\n"
-                "          [--max-dq-per-tick RAD] [--max-iters N] [--save-obs DIR]\n"
+                "          [--max-dq-per-tick RAD] [--skip-chunk-head N]\n"
+                "          [--align-max-jump RAD] [--align-search N] [--action-filter A]\n"
+                "          [--j1-filter A] [--j1-bias RAD] [--j3-filter A] [--j3-bias RAD]\n"
+                "          [--lift-j2 RAD] [--lift-j3 RAD] [--lift-start A]\n"
+                "          [--kp KP] [--kd KD]\n"
+                "          [--gripper-id N] [--no-gripper] [--gripper-filter A]\n"
+                "          [--gripper-kp KP] [--gripper-kd KD] [--gripper-open-extra RAD]\n"
+                "          [--max-iters N] [--save-obs DIR]\n"
                 "          [--no-tensorrt] [--fp16] [--fp16-engines vision,prefill,...]\n"
                 "          [--test-obs DIR] [--test-noise BIN]\n"
                 "          [--test-state \"q1,..,q6,grip\"] [--dump-actions BIN]\n",
@@ -198,6 +276,105 @@ void LoadStateStats(const std::string& path, int dim, std::vector<float>& mean,
     if (!f) throw std::runtime_error("state_norm_stats.bin 大小不足: " + path);
 }
 
+// 丢掉新 chunk 开头的"收臂重开"前缀, 再向后找离参考角最近的一步.
+// 参考必须是上次命令角: 用实测角会对齐到滞后姿态, 每段都先缩回再伸出.
+int AlignActionChunk(const std::vector<float>& actions, int chunk, int dim,
+                     const std::vector<double>* q_ref, int skip_head, double align_max_jump,
+                     int search_n)
+{
+    const int start = std::clamp(skip_head, 0, std::max(0, chunk - 1));
+    if (q_ref == nullptr || q_ref->size() < 6) return start;
+    auto dist = [&](int i) -> double
+    {
+        double s = 0;
+        for (int j = 0; j < 6; ++j)
+        {
+            const double dlt = static_cast<double>(actions[static_cast<size_t>(i) * dim + j]) -
+                               (*q_ref)[j];
+            s += dlt * dlt;
+        }
+        return std::sqrt(s);
+    };
+    const double d0 = dist(start);
+    if (d0 <= align_max_jump) return start;
+    const int n = std::min(std::max(1, search_n), chunk - start);
+    int best = 0;
+    double best_d = d0;
+    for (int j = 0; j < n; ++j)
+    {
+        const double dj = dist(start + j);
+        if (dj < best_d)
+        {
+            best_d = dj;
+            best = j;
+        }
+    }
+    if (best_d + 1e-6 < d0)
+    {
+        std::printf("[ALIGN] skip extra %d after head=%d, jump %.3f->%.3f rad (vs meas, like Python)\n",
+                    best, start, d0, best_d);
+        return start + best;
+    }
+    std::printf("[ALIGN] chunk head jump=%.3f rad after skip_head=%d (vs meas)\n", d0, start);
+    return start;
+}
+
+// 一阶低通: y = a*x + (1-a)*y. a 越小越稳.
+struct JointActionFilter
+{
+    double alpha = 0.25;
+    double j1_alpha = 0.50;
+    double j3_alpha = 0.50;
+    double grip_alpha = 0.50;
+    bool has_q = false;
+    bool has_g = false;
+    double q[6]{};
+    double grip = 0;
+
+    void Reset(const std::vector<double>& q0, double g)
+    {
+        for (int i = 0; i < 6; ++i) q[i] = q0[i];
+        has_q = true;
+        grip = g;
+        has_g = true;
+    }
+
+    void Step(std::vector<float>& action)
+    {
+        const double a = std::clamp(alpha, 0.0, 1.0);
+        const double a1 = std::clamp(j1_alpha, 0.0, 1.0);
+        const double a3 = std::clamp(j3_alpha, 0.0, 1.0);
+        if (!has_q)
+        {
+            for (int i = 0; i < 6; ++i) q[i] = action[i];
+            has_q = true;
+        }
+        else
+        {
+            q[0] = a1 * action[0] + (1.0 - a1) * q[0];
+            q[2] = a3 * action[2] + (1.0 - a3) * q[2];
+            for (int i = 1; i < 6; ++i)
+            {
+                if (i == 2) continue;
+                q[i] = a * action[i] + (1.0 - a) * q[i];
+            }
+        }
+        for (int i = 0; i < 6; ++i) action[i] = static_cast<float>(q[i]);
+        if (action.size() < 7) return;
+        const double ag = std::clamp(grip_alpha, 0.0, 1.0);
+        if (!has_g || ag >= 1.0)
+        {
+            grip = action[6];
+            has_g = true;
+        }
+        else
+        {
+            grip = ag * action[6] + (1.0 - ag) * grip;
+        }
+        action[6] = static_cast<float>(grip);
+    }
+};
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -219,15 +396,16 @@ int main(int argc, char** argv)
     {
         // ---- 推理运行时(4 引擎 ONNX, 输出已反归一化的 7 维动作)----
         smolvla::RuntimeConfig cfg;
-        cfg.artifacts_dir = args.artifacts;
+        cfg.artifacts_dir = std::filesystem::absolute(args.artifacts).lexically_normal().string();
         cfg.use_tensorrt = !args.no_tensorrt;
         cfg.fp16 = args.fp16;
         cfg.fp16_engines = args.fp16_engines;
         // 运行时内部会按每个引擎的精度追加 /fp32 或 /fp16 子目录
         cfg.trt_cache_dir = cfg.artifacts_dir + "/.trt_cache";
+        args.artifacts = cfg.artifacts_dir;
         const auto& d = cfg.dims;
 
-        constexpr int kStateReal = 7;  // [J1..J6, gripper_open]
+        constexpr int kStateReal = 7;  // [J1..J6, gripper_angle]
         std::vector<int64_t> lang_ids;
         std::vector<bool> lang_mask;
         LoadLangTokens(args.artifacts + "/lang_tokens.bin", d.lang_len, lang_ids, lang_mask);
@@ -325,6 +503,11 @@ int main(int argc, char** argv)
             acfg.max_dq_per_tick = args.max_dq_per_tick;
             acfg.control_hz = args.control_hz;
             acfg.gravity_torques = args.gravity_torques;
+            acfg.kp = args.kp;
+            acfg.kd = args.kd;
+            acfg.gripper_id = static_cast<uint8_t>(std::max(0, args.gripper_id));
+            acfg.gripper_kp = args.gripper_kp;
+            acfg.gripper_kd = args.gripper_kd;
             arm = std::make_unique<smolvla::ElA3Arm>(acfg);
             if (args.manual_init)
             {
@@ -359,6 +542,18 @@ int main(int argc, char** argv)
         // 一切就绪, 释放启动保持, 交给模型控制
         if (arm) arm->StopHold();
 
+        JointActionFilter filt;
+        const auto inherit = [&](double v) { return v >= 0.0 ? v : args.action_filter; };
+        filt.alpha = args.action_filter;
+        filt.j1_alpha = inherit(args.j1_filter);
+        filt.j3_alpha = inherit(args.j3_filter);
+        filt.grip_alpha = inherit(args.gripper_filter);
+        if (arm)
+        {
+            filt.Reset(arm->GetJointPositions(),
+                       args.gripper_id > 0 ? arm->GetGripperAngle() : args.gripper_init_angle);
+        }
+
         // ---- 观测缓冲(lang/empty camera 固定不变)----
         smolvla::Observation obs;
         obs.images.resize(d.num_images);
@@ -374,12 +569,31 @@ int main(int argc, char** argv)
         std::normal_distribution<float> nd(0.f, 1.f);
         std::vector<float> noise(static_cast<size_t>(d.chunk) * d.action_dim);
 
-        double tracked_gripper_open = 1.0;  // 无夹爪电机时, 跟随模型输出
+        // 新数据集第 7 维是夹爪角(rad, 越负越开, 接近 0 闭合), 不是 0/1 flag.
+        double tracked_gripper_angle = args.gripper_init_angle;
+        constexpr double kGraspOpenRad = -1.10;
+        constexpr double kGraspCloseRad = -0.05;
+        constexpr double kGripMin = -1.75;
+        constexpr double kGripMax = 0.10;
+
         std::printf(
-            "[RUN] 控制回路启动 (exec_horizon=%d action_dt=%.2fs). Ctrl+C 停止\n"
-            "[SAFE] 动作限幅: 单 action ≤%.3f rad, 每 tick(%.0fHz) ≤%.3f rad\n",
-            args.exec_horizon, args.action_dt, args.max_dq_per_action, args.control_hz,
-            args.max_dq_per_tick);
+            "[RUN] 控制回路启动. Ctrl+C 停止\n"
+            "[PARITY] exec_horizon=%d action_dt=%.2f control_hz=%.0f "
+            "action_filter=%.2f max_dq_per_action=%.3f max_dq_per_tick=%.3f\n"
+            "[PARITY] skip_chunk_head=%d align_max_jump=%.2f align_search=%d "
+            "align_ref=meas kp=%.0f kd=%.1f gravity=%.2f,%.2f,%.2f,%.2f,%.2f,%.2f\n"
+            "[PARITY] grasp j2=%+.3f j3=%+.3f j4=%+.3f grip=%+.3f | "
+            "lift j2=%+.3f j3=%+.3f (0=Python无抬升)\n"
+            "[PARITY] gripper id=%d kp=%.1f kd=%.1f filter=%.2f open_extra=%+.2f "
+            "j1_filter=%.2f j3_filter=%.2f\n",
+            args.exec_horizon, args.action_dt, args.control_hz, args.action_filter,
+            args.max_dq_per_action, args.max_dq_per_tick, args.skip_chunk_head,
+            args.align_max_jump, args.align_search, args.kp, args.kd, args.gravity_torques[0],
+            args.gravity_torques[1], args.gravity_torques[2], args.gravity_torques[3],
+            args.gravity_torques[4], args.gravity_torques[5], args.grasp_j2_bias,
+            args.grasp_j3_bias, args.grasp_j4_bias, args.grasp_grip_bias, args.lift_j2,
+            args.lift_j3, args.gripper_id, args.gripper_kp, args.gripper_kd, filt.grip_alpha,
+            args.gripper_open_extra, filt.j1_alpha, filt.j3_alpha);
 
         int iter = 0;
         while (!g_stop.load() && (args.max_iters < 0 || iter < args.max_iters))
@@ -411,13 +625,14 @@ int main(int argc, char** argv)
             obs.images[0] = smolvla::PreprocessImage(rgb_primary, d.img_size);
             obs.images[1] = smolvla::PreprocessImage(rgb_wrist, d.img_size);
 
-            // 2) 状态: [J1..J6, gripper_open] -> MEAN_STD -> pad 到 32
+            // 2) 状态: [J1..J6, gripper_angle] -> MEAN_STD -> pad 到 32
             std::vector<double> state7(kStateReal);
             if (arm)
             {
                 std::vector<double> q = arm->GetJointPositions();
                 for (int i = 0; i < 6; ++i) state7[i] = q[i];
-                state7[6] = tracked_gripper_open;
+                state7[6] = arm->GetGripperAngle();
+                tracked_gripper_angle = state7[6];
             }
             else
             {
@@ -437,15 +652,36 @@ int main(int argc, char** argv)
                 std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 
             const int D = d.real_action_dim;
-            const int n_exec = std::min(args.exec_horizon, d.chunk);
-            std::printf("[INF %d] %.0fms, 执行前 %d 步\n", iter, inf_ms, n_exec);
+            // 不做对齐搜索(AlignActionChunk 已停用), 只固定丢掉 chunk 开头 skip_chunk_head 步
+            const int chunk_off = std::clamp(args.skip_chunk_head, 0, d.chunk - 1);
+            const int n_exec = std::min(args.exec_horizon, d.chunk - chunk_off);
+            if (arm && !arm->LastCommand().empty())
+            {
+                const auto& cmd = arm->LastCommand();
+                std::printf("[TRACK] J1 cmd=%+.3f meas=%+.3f err=%+.3f | "
+                            "J2 cmd=%+.3f meas=%+.3f err=%+.3f | "
+                            "J3 cmd=%+.3f meas=%+.3f err=%+.3f | "
+                            "G cmd=%+.3f meas=%+.3f err=%+.3f\n",
+                            cmd[0], state7[0], state7[0] - cmd[0], cmd[1], state7[1],
+                            state7[1] - cmd[1], cmd[2], state7[2], state7[2] - cmd[2],
+                            arm->HasGripperCommand() ? arm->LastGripperCommand() : state7[6],
+                            state7[6],
+                            state7[6] - (arm->HasGripperCommand() ? arm->LastGripperCommand()
+                                                                  : state7[6]));
+            }
+            std::printf("[INF %d] %.0fms, 执行前 %d 步 skip_head=%d\n", iter, inf_ms, n_exec,
+                        chunk_off);
 
             // 4) 执行(或打印)
             for (int s = 0; s < n_exec && !g_stop.load(); ++s)
             {
-                std::vector<float> action(actions.begin() + static_cast<size_t>(s) * D,
-                                          actions.begin() + static_cast<size_t>(s + 1) * D);
-                tracked_gripper_open = action[6] > 0.5f ? 1.0 : 0.0;
+                std::vector<float> action(
+                    actions.begin() + static_cast<size_t>(chunk_off + s) * D,
+                    actions.begin() + static_cast<size_t>(chunk_off + s + 1) * D);
+                filt.Step(action);
+                if (args.j1_bias != 0.0) action[0] += static_cast<float>(args.j1_bias);
+                if (args.j3_bias != 0.0) action[2] += static_cast<float>(args.j3_bias);
+                tracked_gripper_angle = action[6];
                 std::printf("[ACT %d]", s);
                 for (int a = 0; a < D; ++a) std::printf(" %+.4f", action[a]);
                 std::printf("\n");

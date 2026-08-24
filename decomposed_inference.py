@@ -23,7 +23,7 @@ import torch
 
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.datasets import LeRobotDataset
-from lerobot.policies import make_pre_post_processors
+from lerobot.policies.factory import make_pre_post_processors
 from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy, make_att_2d_masks
 from lerobot.utils.constants import OBS_LANGUAGE_ATTENTION_MASK, OBS_LANGUAGE_TOKENS
 

@@ -21,9 +21,9 @@ import onnxruntime as ort
 import torch
 
 import lerobot.policies.smolvla.modeling_smolvla as msv
+from dummy_batch import load_export_raw_batch
 from lerobot.configs.policies import PreTrainedConfig
-from lerobot.datasets import LeRobotDataset
-from lerobot.policies import make_pre_post_processors
+from lerobot.policies.factory import make_pre_post_processors
 from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy, make_att_2d_masks
 from lerobot.utils.constants import OBS_LANGUAGE_ATTENTION_MASK, OBS_LANGUAGE_TOKENS
 
@@ -31,16 +31,13 @@ from lerobot.utils.constants import OBS_LANGUAGE_ATTENTION_MASK, OBS_LANGUAGE_TO
 _orig = msv.get_safe_dtype
 msv.get_safe_dtype = lambda req, dt: torch.float32 if req == torch.float64 else _orig(req, dt)
 
+REPO_ROOT = Path(__file__).resolve().parent
 DEFAULT_POLICY_PATH = Path(
-    "/home/ubuntu/smolvla/outputs/train/ela3_smolvla_v5_joint_sd/checkpoints/015000/pretrained_model"
+    "/home/ubuntu/AI/deploy_vla/ela3_smolvla_new_dataset_v3/checkpoints/015000/pretrained_model"
 )
-DEFAULT_DATASET_ROOT = Path("/home/ubuntu/smolvla/data/ela3_lerobot_v2_joint")
-DEFAULT_REPO_ID = "local/ela3_blue_cube_v2_joint"
-ART = Path("/home/ubuntu/smolvla/smolvla-deploy/artifacts")
-
-
-def add_batch_dim(v):
-    return v.unsqueeze(0) if isinstance(v, torch.Tensor) else [v]
+DEFAULT_DATASET_ROOT = Path("/home/ubuntu/smolvla/lerobot_dataset")
+DEFAULT_REPO_ID = "local/ela3_blue_block_new"
+DEFAULT_ARTIFACTS = REPO_ROOT / "artifacts"
 
 
 def main() -> None:
@@ -48,8 +45,10 @@ def main() -> None:
     parser.add_argument("--policy-path", type=Path, default=DEFAULT_POLICY_PATH)
     parser.add_argument("--dataset-root", type=Path, default=DEFAULT_DATASET_ROOT)
     parser.add_argument("--repo-id", type=str, default=DEFAULT_REPO_ID)
+    parser.add_argument("--artifacts", type=Path, default=DEFAULT_ARTIFACTS)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
+    art = args.artifacts
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -62,20 +61,13 @@ def main() -> None:
     policy.reset()
     preprocessor, _ = make_pre_post_processors(cfg, pretrained_path=str(args.policy_path))
 
-    print("[2/5] 加载 prefill / denoise ONNX 引擎(onnxruntime CPU)")
-    prefill = ort.InferenceSession(str(ART / "vlm_prefill.onnx"), providers=["CPUExecutionProvider"])
-    denoise = ort.InferenceSession(str(ART / "action_denoise_step.onnx"), providers=["CPUExecutionProvider"])
+    print(f"[2/5] 加载 prefill / denoise ONNX 引擎(onnxruntime CPU) <- {art}")
+    prefill = ort.InferenceSession(str(art / "vlm_prefill.onnx"), providers=["CPUExecutionProvider"])
+    denoise = ort.InferenceSession(str(art / "action_denoise_step.onnx"), providers=["CPUExecutionProvider"])
 
     print("[3/5] 取一帧观测,组装 prefix(轻量 glue)")
-    dataset = LeRobotDataset(args.repo_id, root=args.dataset_root)
-    sample = dataset[0]
-    raw = {
-        "task": sample["task"],
-        "observation.state": sample["observation.state"],
-        "observation.images.image": sample["observation.images.image"],
-        "observation.images.wrist_image": sample["observation.images.wrist_image"],
-    }
-    batch = preprocessor({k: add_batch_dim(v) for k, v in raw.items()})
+    raw = load_export_raw_batch(args.policy_path, args.dataset_root, args.repo_id)
+    batch = preprocessor(raw)
 
     model = policy.model
     num_layers = model.vlm_with_expert.num_vlm_layers

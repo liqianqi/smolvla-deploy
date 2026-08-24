@@ -22,9 +22,9 @@ import numpy as np
 import torch
 from torch import nn
 
+from dummy_batch import load_export_raw_batch
 from lerobot.configs.policies import PreTrainedConfig
-from lerobot.datasets import LeRobotDataset
-from lerobot.policies import make_pre_post_processors
+from lerobot.policies.factory import make_pre_post_processors
 from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy, make_att_2d_masks
 from lerobot.utils.constants import OBS_LANGUAGE_ATTENTION_MASK, OBS_LANGUAGE_TOKENS
 
@@ -74,10 +74,6 @@ class PrefixAssembler(nn.Module):
         return prefix_embs, prefix_pad, attn_2d, position_ids
 
 
-def add_batch_dim(v):
-    return v.unsqueeze(0) if isinstance(v, torch.Tensor) else [v]
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--policy-path", type=Path, default=DEFAULT_POLICY_PATH)
@@ -99,15 +95,8 @@ def main() -> None:
     preprocessor, _ = make_pre_post_processors(cfg, pretrained_path=str(args.policy_path))
 
     print("[2/5] 取一帧观测,编码图像 embeds 作为示例输入")
-    dataset = LeRobotDataset(args.repo_id, root=args.dataset_root)
-    sample = dataset[0]
-    raw = {
-        "task": sample["task"],
-        "observation.state": sample["observation.state"],
-        "observation.images.image": sample["observation.images.image"],
-        "observation.images.wrist_image": sample["observation.images.wrist_image"],
-    }
-    batch = preprocessor({k: add_batch_dim(v) for k, v in raw.items()})
+    raw = load_export_raw_batch(args.policy_path, args.dataset_root, args.repo_id)
+    batch = preprocessor(raw)
 
     with torch.inference_mode():
         images, img_masks_list = policy.prepare_images(batch)

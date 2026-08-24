@@ -41,7 +41,7 @@
 RealSense 640x480 RGB(主视角)┐
 USB      640x480 RGB(腕部)  ├─ resize_with_pad 512 + [-1,1] ─┐
 第 3 路 empty camera(-1)     ┘                                ├─► SmolVLARuntime ─► 50 步 chunk
-[J1..J6, gripper_open] ─ MEAN_STD 归一化 ─ pad 32 ────────────┤        │
+[J1..J6, gripper_angle] ─ MEAN_STD 归一化 ─ pad 32 ───────────┤        │
 lang_tokens.bin(48 tokens)────────────────────────────────────┘        ▼
                     执行前 exec_horizon=8 步:每步 0.1s @30Hz 线性插值下发
                     (URDF 限位 clip、单步跳变 ≤0.25 rad、每 tick ≤0.08 rad)
@@ -57,7 +57,9 @@ lang_tokens.bin(48 tokens)──────────────────
 关键默认参数:CAN=`can0`、USB 设备号 10、电机 ID 1-6、标定方向 `(-1,1,-1,1,-1,1)`、
 `exec_horizon=8`、`action_dt=0.1s`(与 Python 实机成功配置 `--exec_horizon 8 --action_dt 0.1` 一致;
 只执行前 2 步会一直在 chunk 轨迹起点打转、原地晃动)、`control_hz=30`、伺服 kp=80/kd=3(MIT 力位混合帧)。
-夹爪暂不控制(第 7 维状态跟随模型输出,与 Python `--gripper_id None` 一致)。
+夹爪默认 CAN id=7、角度模式(与 Python `--gripper_id 7` + 新数据集 angle 语义一致):
+模型第 7 维是夹爪角(rad, 越负越开), 用低 kp/kd MIT 帧下发, 力矩上限 0.6 N·m。
+`--no-gripper` 或 `--gripper-id 0` 关闭。
 
 **动作限幅**(避免运动剧烈,均可调):
 - `--max-dq-per-action`(默认 0.25 rad):每个模型动作相对当前关节角的最大跳变
