@@ -11,6 +11,7 @@ trt_cache/
 # ---- C++ 构建 ----
 cpp/build/
 cpp/compile_commands.json
+cpp/.cache/
 # ONNX Runtime / TensorRT 预编译包
 third_party/
 
