@@ -1,19 +1,4 @@
 #!/usr/bin/env python
-"""把 SmolVLA 的视觉编码器(SigLIP vision_model + connector)导出为 ONNX.
-
-为什么只导视觉编码器?
-  SmolVLA 整体结构里 VLM 与 action expert 是逐层交织的,并且推理含 10 步
-  flow-matching 去噪循环(动态控制流),无法整体一次性导出 ONNX.
-  而视觉编码器是纯前向,输入形状固定(resize 到 512x512),是最干净,
-  收益最大的可导出子模块,所以作为 PyTorch -> ONNX -> TensorRT 链路的第一步.
-
-流程:
-  1. 加载训练好的 SmolVLA policy(safetensors / PyTorch 权重).
-  2. 抽出 vision_model + connector 组成一个薄包装模块.
-  3. torch.onnx.export 导出为 .onnx(fp32,作为干净基线).
-  4. 用 onnxruntime 重新加载,和 PyTorch 输出逐元素对比,验证数值一致.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -34,13 +19,6 @@ DEFAULT_OUTPUT = Path("/home/ubuntu/smolvla/smolvla-deploy/artifacts/vision_enco
 
 
 class VisionEncoderWrapper(nn.Module):
-    """只包含 SmolVLA 推理时 `embed_image` 用到的两步:vision_model -> connector.
-
-    输入:pixel_values,形状 (B, 3, H, W),数值范围 [-1, 1](SigLIP 约定,
-          对应 SmolVLAPolicy.prepare_images 里 `img * 2 - 1` 之后的结果).
-    输出:图像 token 的隐藏状态 (B, num_tokens, hidden).
-    """
-
     def __init__(self, vlm_with_expert: nn.Module):
         super().__init__()
         vlm = vlm_with_expert.get_vlm_model()
@@ -48,12 +26,6 @@ class VisionEncoderWrapper(nn.Module):
         self.connector = vlm.connector
 
     def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
-        # 手动展开 vision_model.forward,针对"方形,无 padding,全 patch 有效"的部署场景做两处简化,
-        # 以获得对 ONNX 友好的静态图:
-        #   1) 跳过 create_bidirectional_mask(全注意力 == 不传 mask).
-        #   2) embeddings 的位置编码:全 mask 下 NaViT 的桶化位置 id 退化为标准光栅顺序
-        #      arange(num_patches),从而绕开原实现里基于 mask 的 index_put(ONNX 里会变成
-        #      int64/float 混用的 Where,无法被 onnxruntime/TensorRT 加载).
         vm = self.vision_model
         emb = vm.embeddings
 

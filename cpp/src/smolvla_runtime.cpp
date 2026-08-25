@@ -62,6 +62,7 @@ SmolVLARuntime::SmolVLARuntime(const RuntimeConfig& cfg)
         return ("," + cfg_.fp16_engines + ",").find("," + std::string(name) + ",") !=
                std::string::npos;
     };
+    
     // SessionOptions 与其中的 cache path 字符串必须活到 Session 构造完成
     auto make_session = [&](const char* file, const char* name,
                             std::string& cache_dir) -> std::unique_ptr<Ort::Session>

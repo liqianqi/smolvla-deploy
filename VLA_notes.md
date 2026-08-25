@@ -145,7 +145,7 @@ flow matching 在模型侧赢了，**代价转嫁给了部署侧**：
 |---|---|---|
 | RT-2 | [arxiv.org/abs/2307.15818](https://arxiv.org/abs/2307.15818) | 速读。动作 token 化 + co-fine-tuning、涌现能力实验 |
 | OpenVLA | [arxiv.org/abs/2406.09246](https://arxiv.org/abs/2406.09246) | 架构、OXE 数据配方、推理延迟分析（理解转向 flow matching 的原因） |
-| **π0** | [arxiv.org/abs/2410.24164](https://arxiv.org/abs/2410.24164) | **精读**。action expert 注意力交织、flow matching 目标、10 步欧拉积分、chunking。对照 `export_prefill.py` / `export_denoise.py` 读 |
+| **π0** | [arxiv.org/abs/2410.24164](https://arxiv.org/abs/2410.24164) | **精读**。action expert 注意力交织、flow matching 目标、10 步欧拉积分、chunking。对照 `tools/export_prefill.py` / `tools/export_denoise.py` 读 |
 | **SmolVLA** | [arxiv.org/abs/2506.01844](https://arxiv.org/abs/2506.01844) | **精读**。跳层取特征、self/cross-attn 交替、异步推理（对应 C++ 的 exec_horizon）、与 π0 的差异表 |
 | π0-FAST | [arxiv.org/abs/2501.09747](https://arxiv.org/abs/2501.09747) | 速读。DCT 频域 tokenization，自回归翻身的关键 |
 | GR00T N1 | [arxiv.org/abs/2503.14734](https://arxiv.org/abs/2503.14734) | 速读。双系统架构图、数据金字塔、与 π0 交织式的耦合差异 |
