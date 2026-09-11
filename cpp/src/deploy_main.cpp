@@ -92,7 +92,7 @@ struct DeployArgs
     bool fp16 = false;
     std::string fp16_engines;
 };
-
+ 
 std::array<double, 6> ParseSix(const std::string& s)
 {
     std::array<double, 6> out{};
