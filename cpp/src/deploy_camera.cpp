@@ -82,6 +82,9 @@ UsbCamera::~UsbCamera()
 cv::Mat UsbCamera::Read()
 {
     cv::Mat bgr;
+    // BUFFERSIZE=1 时, 两次 read 之间(执行 chunk 的 1~2 s)缓冲区里存的是上次读完后 1 帧的旧画面,
+    // 先读一次丢掉, 第二次才是当前帧(代价约 1 帧 ~45ms)
+    impl_->cap.read(bgr);
     if (!impl_->cap.read(bgr) || bgr.empty()) throw std::runtime_error("USB 相机丢帧");
     cv::Mat rgb;
     cv::cvtColor(bgr, rgb, cv::COLOR_BGR2RGB);

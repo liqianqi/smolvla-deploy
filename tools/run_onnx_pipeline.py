@@ -1,16 +1,4 @@
 #!/usr/bin/env python
-"""端到端集成验证:用 onnxruntime 串联 prefill + denoise 引擎,在 Python 里跑完整
-10 步 flow-matching 去噪循环,验证最终动作与原 policy 一致.
-
-这正是未来 C++ runtime 要做的编排逻辑:
-    prefix 组装(轻量 glue) -> [prefill ONNX] 出 KV cache
-                          -> for 10 步: [denoise ONNX] 出 v_t, 欧拉更新 x_t
-说明:
-  - prefix 组装(语言查表 / state_proj / 拼接 / mask)是轻量算子,这里仍用 PyTorch 充当
-    "C++ glue"的占位;视觉编码器已单独验证过 ONNX,故此处聚焦两个最重的 transformer 引擎.
-  - 为公平对比,参考侧也把模型转 fp32,并把时间编码降到 float32(与导出口径一致).
-"""
-
 from __future__ import annotations
 
 import argparse

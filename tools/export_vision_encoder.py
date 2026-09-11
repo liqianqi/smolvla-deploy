@@ -88,7 +88,7 @@ def main() -> None:
     simplify_diff = float(torch.max(torch.abs(ref_out - orig_out)))
     print(f"      输出形状: {tuple(ref_out.shape)}  dtype={ref_out.dtype}")
     print(f"      简化(无mask) vs 原始(带mask)  max|diff|={simplify_diff:.3e}  "
-          f"({'等价 ✓' if simplify_diff < 1e-4 else '不等价 ✗'})")
+          f"({'等价' if simplify_diff < 1e-4 else '不等价 ✗'})")
 
     print(f"[3/4] 导出 ONNX({args.exporter} 导出器)-> {args.output}")
     with torch.inference_mode():

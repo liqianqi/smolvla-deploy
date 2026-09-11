@@ -1,22 +1,4 @@
 #!/usr/bin/env python
-"""把 SmolVLA 的"单步 denoise"(action expert)导出为 ONNX(路线②第③步).
-
-flow-matching 去噪循环里每一步做的事:
-    embed_suffix(噪声动作 x_t + 时间 t) -> action expert 各层 cross-attention 读 prefill 的 KV cache
-    -> action_out_proj -> 速度场 v_t
-循环(x_t = x_t + dt*v_t,共 10 步)本身将由 C++ 控制流实现,每步调用本 ONNX engine.
-
-关键改造:denoise_step 原本接收 Python dict 形式的 past_key_values.这里包一层,
-把 prefill 导出的两个显式张量 (kv_keys, kv_values) 在内部重新组装成 dict 再喂进去.
-
-输入:
-    x_t              (B, chunk_size, max_action_dim)  当前带噪动作
-    timestep         (B,)                              当前时间 t
-    kv_keys/kv_values(num_layers, B, L, n_kv, head_dim) prefill 产出的 KV cache
-    prefix_pad_masks (B, L) bool                        prefix 有效位掩码
-输出:
-    v_t              (B, chunk_size, max_action_dim)   预测速度场
-"""
 
 from __future__ import annotations
 

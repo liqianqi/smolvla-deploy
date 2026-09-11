@@ -1,13 +1,5 @@
 #!/usr/bin/env python
-"""导出 observation.state 的归一化统计量 (mean/std) 为二进制文件, 供 C++ 部署程序加载.
 
-state 用 MEAN_STD 归一化: norm = (state - mean) / (std + eps), eps=1e-8.
-输出 state_norm_stats.bin 布局 (全部 float32, little-endian):
-    [ mean[0..D-1], std[0..D-1] ]   其中 D = 7 ([J1..J6, gripper_open])
-
-用法:
-  /home/ubuntu/AI/deploy_vla/.smolvla_venv/bin/python tools/export_state_stats.py
-"""
 
 from __future__ import annotations
 

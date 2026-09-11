@@ -1,16 +1,5 @@
 #!/usr/bin/env python
-"""把 SmolVLA 的 prefix 组装(embed_prefix 的非视觉部分)导出为 ONNX(路线②第①b步).
 
-作用:接收"已编码的图像 embeds"(来自 vision 引擎)+ 语言 token + state,
-完成 语言查表 / state_proj / 图像缩放 / 拼接 / 掩码,输出 prefill 引擎直接可用的:
-    prefix_embs      (B, prefix_len, dim)
-    prefix_pad_masks (B, prefix_len) bool
-    attn_2d_mask     (B, prefix_len, prefix_len) bool
-    position_ids     (B, prefix_len) int64
-
-这样 C++ 端就只需串联 4 个 ONNX 引擎 + tokenizer + 去噪循环,无需手写任何模型算子.
-仅适配当前 checkpoint 配置:add_image_special_tokens=False, prefix_length=0.
-"""
 
 from __future__ import annotations
 
@@ -31,6 +20,8 @@ from lerobot.utils.constants import OBS_LANGUAGE_ATTENTION_MASK, OBS_LANGUAGE_TO
 DEFAULT_POLICY_PATH = Path(
     "/home/ubuntu/smolvla/outputs/train/ela3_smolvla_v5_joint_sd/checkpoints/015000/pretrained_model"
 )
+
+# datasets 和 repo_id已经弃用, 改用dummy
 DEFAULT_DATASET_ROOT = Path("/home/ubuntu/smolvla/data/ela3_lerobot_v2_joint")
 DEFAULT_REPO_ID = "local/ela3_blue_cube_v2_joint"
 DEFAULT_OUTPUT = Path("/home/ubuntu/smolvla/smolvla-deploy/artifacts/prefix_assembler.onnx")

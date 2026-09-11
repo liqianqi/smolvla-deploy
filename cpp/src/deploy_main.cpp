@@ -1,15 +1,7 @@
-// SmolVLA C++ 实机部署入口:复刻 run_ela3_smolvla_inference.py --mode deploy 的闭环
-//
-//   RealSense(主视角) + USB(腕部) -> resize_with_pad 512 + [-1,1]
-//   6 关节角 + 夹爪角(rad) -> MEAN_STD 归一化 -> pad 32
-//   lang_tokens.bin(tools/export_lang_tokens.py 离线导出)
-//        -> SmolVLARuntime(4 引擎 ONNX + TensorRT EP)
-//        -> 50 步 chunk -> 执行前 exec_horizon 步(0.2s/步 @30Hz 插值 + 限速)
-//
 // 流程: 上电 -> 零力矩+重力补偿手动摆位 -> Enter -> 保持 + 加载模型/相机 -> 模型控制
 // 用法示例:
-//   ./smolvla_deploy --artifacts ../../artifacts              # 默认 can0 / USB 10
-//   ./smolvla_deploy --artifacts ../../artifacts --no-arm     # 无机械臂,只推理打印
+// ./smolvla_deploy --artifacts ../../artifacts    # 默认 can0 / USB 10
+// usbcamera的序列号需要自己查询
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -51,37 +43,39 @@ struct DeployArgs
     bool swap_cameras = false;
     bool no_arm = false;
     bool fake_cameras = false;  // 无相机硬件时用全黑帧冒烟测试
-    bool manual_init = true;    // 对应 Python --manual_init_before_model
-    // 与你那条能跑通的 Python 命令一致:
-    //   --exec_horizon 8 --action_dt 0.1 --control_hz 20
-    //   --action_filter 0.25 --max_dq_per_action 0.12
+    bool manual_init = true;
+    // 展示用: 任务指令. 实际 token 来自 artifacts/lang_tokens.bin(tools/export_lang_tokens.py 离线编码),
+    // 此参数只打印, 换指令需重新导出 lang_tokens.bin
+    std::string instruction = "pick up the blue block";
     int exec_horizon = 8;
-    double action_dt = 0.1;
-    double control_hz = 150.0;
-    double max_dq_per_action = 0.12;
-    double max_dq_per_tick = 0.08;  // Python MAX_DQ_PER_TICK, 无 CLI
+    double action_dt = 0.11;
+    double control_hz = 200.0;
+    double max_dq_per_action = 0.20;
+    double max_dq_per_tick = 0.08;  
     int skip_chunk_head = 0;
     double align_max_jump = 0.35;
-    int align_search = 12;  // Python _align_action_chunk 写死搜 12 步
-    double action_filter = 0.25;
-    // <0 表示跟 Python 一样, 全部用 action_filter. 显式传了才单独改.
+    int align_search = 12;
+    double action_filter = 0.5;
     double j1_filter = -1.0;
     double j1_bias = 0.0;
+    // 全程关节偏置(rad). 负=更低/更前: 失败抓取比成功的 J3 高 0.07、J4 高 0.16, 各补一部分
+    double j4_bias = -0.04;
     double j3_filter = -1.0;
-    double j3_bias = 0.0;
-    double gripper_filter = 0.27;
-    double kp = 150.0;
-    double kd = 3.5;
+    double j3_bias = -0.02;
+    double gripper_filter = 0.6;
+    // 夹爪动作相对关节错开 k 步(k*action_dt 秒): 正=夹爪晚动, 负=夹爪早动(先夹紧再抬), 0=关
+    int gripper_delay = 0;
+    double kp = 120.0;
+    double kd = 5.0;
     int gripper_id = 7;
     double gripper_kp = 8.0;
     double gripper_kd = 0.4;
     double gripper_init_angle = -0.55;
-    double gripper_open_extra = -0.18;  // Python DEFAULT_GRIPPER_OPEN_EXTRA
+    double gripper_open_extra = -0.18;  
     double grasp_j2_bias = 0.06;
     double grasp_j3_bias = -0.04;
     double grasp_j4_bias = -0.04;
     double grasp_grip_bias = 0.18;
-    // Python 没有 lift. 默认 0=关掉, 要抬再显式传.
     double lift_start = 0.50;
     double lift_j2 = 0.0;
     double lift_j3 = 0.0;
@@ -95,11 +89,7 @@ struct DeployArgs
     std::string test_state = "0.0864,1.6489,-1.4201,1.0095,-0.0449,-0.0288,1.0";
     std::string dump_actions;  // 输出 cpp_actions.bin: float32 x (chunk*7)
     bool no_tensorrt = false;  // 关 TensorRT EP(退回 CUDA EP)
-    // 默认 FP32: 实测 TensorRT FP16 会把该模型输出打崩(动作塌向训练均值,
-    // 机械臂原地晃动不朝目标走), FP32/CUDA 与 PyTorch 逐位一致
     bool fp16 = false;
-    // 按引擎开 FP16(定位精度问题用), 如 "vision" 或 "vision,denoise";
-    // 可选名字: vision / assembler / prefill / denoise. 非空时覆盖 --fp16
     std::string fp16_engines;
 };
 
@@ -127,6 +117,8 @@ DeployArgs ParseArgs(int argc, char** argv)
         };
         if (k == "--artifacts")
             a.artifacts = next();
+        else if (k == "--instruction")
+            a.instruction = next();
         else if (k == "--can")
             a.can_iface = next();
         else if (k == "--rs-serial")
@@ -165,6 +157,8 @@ DeployArgs ParseArgs(int argc, char** argv)
             a.grasp_j3_bias = std::stod(next());
         else if (k == "--grasp-j4-bias")
             a.grasp_j4_bias = std::stod(next());
+        else if (k == "--grasp-grip-bias")
+            a.grasp_grip_bias = std::stod(next());
         else if (k == "--lift-start")
             a.lift_start = std::stod(next());
         else if (k == "--lift-j2")
@@ -177,6 +171,8 @@ DeployArgs ParseArgs(int argc, char** argv)
             a.j1_filter = std::stod(next());
         else if (k == "--j1-bias")
             a.j1_bias = std::stod(next());
+        else if (k == "--j4-bias")
+            a.j4_bias = std::stod(next());
         else if (k == "--j3-filter")
             a.j3_filter = std::stod(next());
         else if (k == "--j3-bias")
@@ -187,6 +183,8 @@ DeployArgs ParseArgs(int argc, char** argv)
             a.kd = std::stod(next());
         else if (k == "--gripper-filter")
             a.gripper_filter = std::stod(next());
+        else if (k == "--gripper-delay")
+            a.gripper_delay = std::stoi(next());
         else if (k == "--gripper-id")
             a.gripper_id = std::stoi(next());
         else if (k == "--no-gripper")
@@ -218,16 +216,16 @@ DeployArgs ParseArgs(int argc, char** argv)
         else
         {
             std::printf(
-                "用法: %s [--artifacts DIR] [--can IFACE] [--rs-serial SN] [--usb-device N]\n"
+                "用法: %s [--artifacts DIR] [--instruction TEXT] [--can IFACE] [--rs-serial SN] [--usb-device N]\n"
                 "          [--swap-cameras] [--no-arm] [--fake-cameras] [--no-manual-init]\n"
                 "          [--gravity-torques \"0,1.2,-1.2,0.1,0,0\"] [--exec-horizon N]\n"
                 "          [--action-dt S] [--control-hz HZ] [--max-dq-per-action RAD]\n"
                 "          [--max-dq-per-tick RAD] [--skip-chunk-head N]\n"
                 "          [--align-max-jump RAD] [--align-search N] [--action-filter A]\n"
-                "          [--j1-filter A] [--j1-bias RAD] [--j3-filter A] [--j3-bias RAD]\n"
+                "          [--j1-filter A] [--j1-bias RAD] [--j3-filter A] [--j3-bias RAD] [--j4-bias RAD]\n"
                 "          [--lift-j2 RAD] [--lift-j3 RAD] [--lift-start A]\n"
                 "          [--kp KP] [--kd KD]\n"
-                "          [--gripper-id N] [--no-gripper] [--gripper-filter A]\n"
+                "          [--gripper-id N] [--no-gripper] [--gripper-filter A] [--gripper-delay K]\n"
                 "          [--gripper-kp KP] [--gripper-kd KD] [--gripper-open-extra RAD]\n"
                 "          [--max-iters N] [--save-obs DIR]\n"
                 "          [--no-tensorrt] [--fp16] [--fp16-engines vision,prefill,...]\n"
@@ -409,6 +407,7 @@ int main(int argc, char** argv)
         std::vector<int64_t> lang_ids;
         std::vector<bool> lang_mask;
         LoadLangTokens(args.artifacts + "/lang_tokens.bin", d.lang_len, lang_ids, lang_mask);
+        std::printf("[INIT] 任务指令: \"%s\"\n", args.instruction.c_str());
         std::vector<float> st_mean, st_std;
         LoadStateStats(args.artifacts + "/state_norm_stats.bin", kStateReal, st_mean, st_std);
 
@@ -571,6 +570,7 @@ int main(int argc, char** argv)
 
         // 新数据集第 7 维是夹爪角(rad, 越负越开, 接近 0 闭合), 不是 0/1 flag.
         double tracked_gripper_angle = args.gripper_init_angle;
+        float grip_prev = static_cast<float>(filt.has_g ? filt.grip : args.gripper_init_angle);
         constexpr double kGraspOpenRad = -1.10;
         constexpr double kGraspCloseRad = -0.05;
         constexpr double kGripMin = -1.75;
@@ -678,9 +678,31 @@ int main(int argc, char** argv)
                 std::vector<float> action(
                     actions.begin() + static_cast<size_t>(chunk_off + s) * D,
                     actions.begin() + static_cast<size_t>(chunk_off + s + 1) * D);
+                // 改动A: 夹爪取错开 k 步的动作(负 k 即提前); 越界时沿用上一步/钉在 chunk 末尾
+                if (args.gripper_delay != 0)
+                {
+                    const int gs = std::min(chunk_off + s - args.gripper_delay, d.chunk - 1);
+                    action[6] = gs >= 0 ? actions[static_cast<size_t>(gs) * D + 6] : grip_prev;
+                    grip_prev = action[6];
+                }
                 filt.Step(action);
                 if (args.j1_bias != 0.0) action[0] += static_cast<float>(args.j1_bias);
                 if (args.j3_bias != 0.0) action[2] += static_cast<float>(args.j3_bias);
+                if (args.j4_bias != 0.0) action[3] += static_cast<float>(args.j4_bias);
+                // 抓取相位偏置(同 Python _apply_grasp_bias): 只在夹爪趋于闭合时按闭合程度
+                // amt∈[0,1] 线性加一点下探/前俯并夹紧, 空中接近阶段(amt=0)不受影响
+                {
+                    const double amt = std::clamp(
+                        (action[6] - kGraspOpenRad) / (kGraspCloseRad - kGraspOpenRad), 0.0, 1.0);
+                    if (amt > 1e-3)
+                    {
+                        action[1] += static_cast<float>(amt * args.grasp_j2_bias);
+                        action[2] += static_cast<float>(amt * args.grasp_j3_bias);
+                        action[3] += static_cast<float>(amt * args.grasp_j4_bias);
+                        action[6] = static_cast<float>(std::clamp(
+                            action[6] + amt * args.grasp_grip_bias, kGripMin, kGripMax));
+                    }
+                }
                 tracked_gripper_angle = action[6];
                 std::printf("[ACT %d]", s);
                 for (int a = 0; a < D; ++a) std::printf(" %+.4f", action[a]);

@@ -1,18 +1,4 @@
 #!/usr/bin/env python
-"""SmolVLA 推理的"分块"参考实现(脱离 LeRobot 的 sample_actions 封装).
-
-目的(路线②的第①步):
-  把一次推理显式拆成 4 个"可独立导出/可被 C++ 编排"的块,自己驱动它们跑出动作,
-  并验证结果与原 policy.predict_action_chunk 完全一致(用同一份固定 noise).
-  这是后续逐块导出 ONNX/TensorRT,以及用 C++ 写去噪循环的"黄金参考".
-
-四个块(对应未来的引擎 / C++ 职责):
-  Block 1  视觉编码器 embed_image         -> 已导出 ONNX,未来 TensorRT engine
-  Block 2  prefix 组装 embed_prefix       -> 视觉emb + 语言emb(查表) + state_proj,拼成序列
-  Block 3  VLM prefill (fill_kv_cache)     -> 16 层文本 transformer,产出 per-layer KV cache
-  Block 4  flow-matching 去噪循环 x10      -> 每步 denoise_step(action expert) + 欧拉更新
-                                              (循环本身将由 C++ 实现)
-"""
 
 from __future__ import annotations
 

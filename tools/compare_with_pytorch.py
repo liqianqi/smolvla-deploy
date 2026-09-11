@@ -1,14 +1,4 @@
 #!/usr/bin/env python
-"""用同一组观测(保存下来的真实相机帧 + 给定关节状态)分别跑:
-  A. 原 PyTorch policy(Python 部署实际用的链路)
-  B. 部署用的 4 个 ONNX 引擎(C++ runtime 的等价编排)
-对比动作 chunk, 用于定位 "C++ 输出退化到均值" 是管线 bug 还是观测本身的问题.
-
-用法:
-  HF_HUB_OFFLINE=1 python tools/compare_with_pytorch.py \
-      --primary /tmp/obs/primary_camera1.jpg --wrist /tmp/obs/wrist_camera2.jpg \
-      --state 0.0864,1.6489,-1.4201,1.0095,-0.0449,-0.0288,1.0
-"""
 
 from __future__ import annotations
 

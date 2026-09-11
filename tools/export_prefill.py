@@ -1,19 +1,5 @@
 #!/usr/bin/env python
-"""把 SmolVLA 的 VLM prefill 导出为 ONNX(路线②第②步).
 
-prefill = 把 prefix 序列(图像emb + 语言emb + state)过 16 层文本 transformer,
-产出每一层的 KV cache,供后续 action expert 去噪时 cross-attention 读取.
-
-关键改造:原 vlm_with_expert.forward 把 KV cache 存成 Python dict
-{layer_idx: {"key_states":..., "value_states":...}},ONNX 无法表达.
-这里包一层,把 dict 堆叠成两个显式张量输出:
-    keys   (num_layers, B, L, n_kv_heads, head_dim)
-    values (num_layers, B, L, n_kv_heads, head_dim)
-未来 C++ 端就持有这两个张量,传给 denoise 引擎.
-
-示例输入(prefix_embs / attn_2d_mask / position_ids)直接从真实一帧观测跑
-embed_prefix 得到,保证形状正确.导出用 fp32 干净基线.
-"""
 
 from __future__ import annotations
 
