@@ -12,10 +12,9 @@ from torch import nn
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
 
-DEFAULT_POLICY_PATH = Path(
-    "/home/ubuntu/smolvla/outputs/train/ela3_smolvla_v5_joint_sd/checkpoints/015000/pretrained_model"
-)
-DEFAULT_OUTPUT = Path("/home/ubuntu/smolvla/smolvla-deploy/artifacts/vision_encoder.onnx")
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_POLICY_PATH = REPO_ROOT / "ela3_smolvla_new_dataset_v3/checkpoints/015000/pretrained_model"
+DEFAULT_OUTPUT = REPO_ROOT / "artifacts" / "vision_encoder.onnx"
 
 
 class VisionEncoderWrapper(nn.Module):

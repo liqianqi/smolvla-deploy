@@ -1,3 +1,7 @@
+# ---- 训练 checkpoint / 本地笔记 (不入库) ----
+/ela3_smolvla_new_dataset_v3/
+/recovered_chat_2026-10-20.md
+
 # ---- 导出产物 (由 export_*.py 生成, 体积大, 不入库) ----
 artifacts/
 *.onnx

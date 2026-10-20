@@ -14,11 +14,12 @@ from pathlib import Path
 
 from safetensors.torch import load_file
 
-DEFAULT_STATS = Path(
-    "/home/ubuntu/smolvla/outputs/train/ela3_smolvla_v5_joint_sd/checkpoints/015000/"
-    "pretrained_model/policy_postprocessor_step_0_unnormalizer_processor.safetensors"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_STATS = (
+    REPO_ROOT / "ela3_smolvla_new_dataset_v3/checkpoints/015000/pretrained_model"
+    / "policy_postprocessor_step_0_unnormalizer_processor.safetensors"
 )
-DEFAULT_OUTPUT = Path("/home/ubuntu/smolvla/smolvla-deploy/artifacts/action_norm_stats.bin")
+DEFAULT_OUTPUT = REPO_ROOT / "artifacts" / "action_norm_stats.bin"
 
 
 def main() -> None:

@@ -9,11 +9,12 @@ from pathlib import Path
 
 from safetensors import safe_open
 
-DEFAULT_STATS = Path(
-    "/home/ubuntu/AI/deploy_vla/020000/pretrained_model/"
-    "policy_preprocessor_step_5_normalizer_processor.safetensors"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_STATS = (
+    REPO_ROOT / "ela3_smolvla_new_dataset_v3/checkpoints/015000/pretrained_model"
+    / "policy_preprocessor_step_5_normalizer_processor.safetensors"
 )
-DEFAULT_OUTPUT = Path(__file__).resolve().parent.parent / "artifacts" / "state_norm_stats.bin"
+DEFAULT_OUTPUT = REPO_ROOT / "artifacts" / "state_norm_stats.bin"
 
 
 def main() -> None:

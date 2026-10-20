@@ -10,6 +10,7 @@ import torch
 from PIL import Image
 
 import lerobot.policies.smolvla.modeling_smolvla as msv
+from dummy_batch import detect_image_keys
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.policies.factory import make_pre_post_processors
 from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy, make_att_2d_masks
@@ -19,8 +20,9 @@ from lerobot.utils.constants import OBS_LANGUAGE_ATTENTION_MASK, OBS_LANGUAGE_TO
 _orig = msv.get_safe_dtype
 msv.get_safe_dtype = lambda req, dt: torch.float32 if req == torch.float64 else _orig(req, dt)
 
-POLICY = Path("/home/ubuntu/AI/deploy_vla/020000/pretrained_model")
-ART = Path(__file__).resolve().parent.parent / "artifacts"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_POLICY_PATH = REPO_ROOT / "ela3_smolvla_new_dataset_v3/checkpoints/015000/pretrained_model"
+ART = REPO_ROOT / "artifacts"
 
 
 def load_img(p: str) -> torch.Tensor:
@@ -30,6 +32,7 @@ def load_img(p: str) -> torch.Tensor:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--policy-path", type=Path, default=DEFAULT_POLICY_PATH)
     ap.add_argument("--primary", default="/tmp/obs/primary_camera1.jpg")
     ap.add_argument("--wrist", default="/tmp/obs/wrist_camera2.jpg")
     ap.add_argument("--state", default="0.0864,1.6489,-1.4201,1.0095,-0.0449,-0.0288,1.0")
@@ -46,19 +49,20 @@ def main() -> None:
     assert state7.shape[0] == 7
 
     print("[1/4] 加载 PyTorch policy")
-    cfg = PreTrainedConfig.from_pretrained(POLICY)
+    cfg = PreTrainedConfig.from_pretrained(args.policy_path)
     cfg.device = device
-    policy = SmolVLAPolicy.from_pretrained(POLICY, config=cfg)
+    policy = SmolVLAPolicy.from_pretrained(args.policy_path, config=cfg)
     policy.eval()
     policy.model.float()
     policy.reset()
-    pre, post = make_pre_post_processors(cfg, pretrained_path=str(POLICY))
+    pre, post = make_pre_post_processors(cfg, pretrained_path=str(args.policy_path))
 
+    image_key, wrist_key = detect_image_keys(args.policy_path)
     raw = {
         "task": args.instruction,
         "observation.state": torch.as_tensor(state7, dtype=torch.float32).unsqueeze(0),
-        "observation.images.image": load_img(args.primary).unsqueeze(0),
-        "observation.images.wrist_image": load_img(args.wrist).unsqueeze(0),
+        image_key: load_img(args.primary).unsqueeze(0),
+        wrist_key: load_img(args.wrist).unsqueeze(0),
     }
     raw["task"] = [raw["task"]]
     batch = pre(raw)

@@ -19,10 +19,8 @@ from lerobot.utils.constants import OBS_LANGUAGE_ATTENTION_MASK, OBS_LANGUAGE_TO
 _orig = msv.get_safe_dtype
 msv.get_safe_dtype = lambda req, dt: torch.float32 if req == torch.float64 else _orig(req, dt)
 
-REPO_ROOT = Path(__file__).resolve().parent
-DEFAULT_POLICY_PATH = Path(
-    "/home/ubuntu/AI/deploy_vla/ela3_smolvla_new_dataset_v3/checkpoints/015000/pretrained_model"
-)
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_POLICY_PATH = REPO_ROOT / "ela3_smolvla_new_dataset_v3/checkpoints/015000/pretrained_model"
 DEFAULT_DATASET_ROOT = Path("/home/ubuntu/smolvla/lerobot_dataset")
 DEFAULT_REPO_ID = "local/ela3_blue_block_new"
 DEFAULT_ARTIFACTS = REPO_ROOT / "artifacts"

@@ -4,6 +4,7 @@ CompileFlags:
     - -I/usr/include/opencv4
     - -I/home/ubuntu/AI/smolvla-deploy/cpp/include
     - -I/home/ubuntu/AI/smolvla-deploy/third_party/onnxruntime/include
+    - -I/usr/local/cuda/include
     - -I/home/ubuntu/robstride_dynamics_arm/driver/include
     - -I/home/ubuntu/robstride_dynamics_arm/lib_common/include
     - -std=c++17

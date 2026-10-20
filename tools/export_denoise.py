@@ -23,12 +23,11 @@ msv.get_safe_dtype = lambda requested, device_type: (
     torch.float32 if requested == torch.float64 else _orig_get_safe_dtype(requested, device_type)
 )
 
-DEFAULT_POLICY_PATH = Path(
-    "/home/ubuntu/smolvla/outputs/train/ela3_smolvla_v5_joint_sd/checkpoints/015000/pretrained_model"
-)
-DEFAULT_DATASET_ROOT = Path("/home/ubuntu/smolvla/data/ela3_lerobot_v2_joint")
-DEFAULT_REPO_ID = "local/ela3_blue_cube_v2_joint"
-DEFAULT_OUTPUT = Path("/home/ubuntu/smolvla/smolvla-deploy/artifacts/action_denoise_step.onnx")
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_POLICY_PATH = REPO_ROOT / "ela3_smolvla_new_dataset_v3/checkpoints/015000/pretrained_model"
+DEFAULT_DATASET_ROOT = Path("/home/ubuntu/smolvla/lerobot_dataset")
+DEFAULT_REPO_ID = "local/ela3_blue_block_new"
+DEFAULT_OUTPUT = REPO_ROOT / "artifacts" / "action_denoise_step.onnx"
 
 
 class DenoiseWrapper(nn.Module):

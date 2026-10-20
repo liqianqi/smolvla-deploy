@@ -17,14 +17,13 @@ from lerobot.policies.factory import make_pre_post_processors
 from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy, make_att_2d_masks
 from lerobot.utils.constants import OBS_LANGUAGE_ATTENTION_MASK, OBS_LANGUAGE_TOKENS
 
-DEFAULT_POLICY_PATH = Path(
-    "/home/ubuntu/smolvla/outputs/train/ela3_smolvla_v5_joint_sd/checkpoints/015000/pretrained_model"
-)
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_POLICY_PATH = REPO_ROOT / "ela3_smolvla_new_dataset_v3/checkpoints/015000/pretrained_model"
 
 # datasets 和 repo_id已经弃用, 改用dummy
-DEFAULT_DATASET_ROOT = Path("/home/ubuntu/smolvla/data/ela3_lerobot_v2_joint")
-DEFAULT_REPO_ID = "local/ela3_blue_cube_v2_joint"
-DEFAULT_OUTPUT = Path("/home/ubuntu/smolvla/smolvla-deploy/artifacts/prefix_assembler.onnx")
+DEFAULT_DATASET_ROOT = Path("/home/ubuntu/smolvla/lerobot_dataset")
+DEFAULT_REPO_ID = "local/ela3_blue_block_new"
+DEFAULT_OUTPUT = REPO_ROOT / "artifacts" / "prefix_assembler.onnx"
 
 
 class PrefixAssembler(nn.Module):

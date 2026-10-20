@@ -13,11 +13,14 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <mutex>
+#include <opencv2/highgui.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <random>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "arm_ela3.hpp"
@@ -37,15 +40,14 @@ void OnSigInt(int)
 struct DeployArgs
 {
     std::string artifacts = "../../artifacts";
-    std::string can_iface = "can1";
+    std::string can_iface = "can0";
     std::string rs_serial;
-    int usb_device = 10;
+    int usb_device = 4;
     bool swap_cameras = false;
     bool no_arm = false;
     bool fake_cameras = false;  // 无相机硬件时用全黑帧冒烟测试
+    bool show = false;          // 弹窗实时显示两路相机画面(录屏用)
     bool manual_init = true;
-    // 展示用: 任务指令. 实际 token 来自 artifacts/lang_tokens.bin(tools/export_lang_tokens.py 离线编码),
-    // 此参数只打印, 换指令需重新导出 lang_tokens.bin
     std::string instruction = "pick up the blue block";
     int exec_horizon = 8;
     double action_dt = 0.11;
@@ -57,11 +59,11 @@ struct DeployArgs
     int align_search = 12;
     double action_filter = 0.5;
     double j1_filter = -1.0;
-    double j1_bias = 0.0;
+    double j1_bias = -0.055;
     // 全程关节偏置(rad). 负=更低/更前: 失败抓取比成功的 J3 高 0.07、J4 高 0.16, 各补一部分
-    double j4_bias = -0.04;
+    double j4_bias = -0.065;
     double j3_filter = -1.0;
-    double j3_bias = -0.02;
+    double j3_bias = -0.015;
     double gripper_filter = 0.6;
     // 夹爪动作相对关节错开 k 步(k*action_dt 秒): 正=夹爪晚动, 负=夹爪早动(先夹紧再抬), 0=关
     int gripper_delay = 0;
@@ -131,6 +133,8 @@ DeployArgs ParseArgs(int argc, char** argv)
             a.no_arm = true;
         else if (k == "--fake-cameras")
             a.fake_cameras = true;
+        else if (k == "--show")
+            a.show = true;
         else if (k == "--no-manual-init")
             a.manual_init = false;
         else if (k == "--gravity-torques")
@@ -217,7 +221,7 @@ DeployArgs ParseArgs(int argc, char** argv)
         {
             std::printf(
                 "用法: %s [--artifacts DIR] [--instruction TEXT] [--can IFACE] [--rs-serial SN] [--usb-device N]\n"
-                "          [--swap-cameras] [--no-arm] [--fake-cameras] [--no-manual-init]\n"
+                "          [--swap-cameras] [--no-arm] [--fake-cameras] [--show] [--no-manual-init]\n"
                 "          [--gravity-torques \"0,1.2,-1.2,0.1,0,0\"] [--exec-horizon N]\n"
                 "          [--action-dt S] [--control-hz HZ] [--max-dq-per-action RAD]\n"
                 "          [--max-dq-per-tick RAD] [--skip-chunk-head N]\n"
@@ -538,6 +542,80 @@ int main(int argc, char** argv)
             std::printf("[INIT] --fake-cameras: 用全黑帧代替真实相机(仅冒烟测试)\n");
         }
 
+        // ---- 相机采集线程: 持续读两路相机保存最新帧(推理取到的永远是当前画面, 不会是缓冲区里
+        //      执行 chunk 之前的旧帧), --show 时在同一线程里把两路画面并排显示 ----
+        std::mutex cam_mu;
+        cv::Mat latest_primary, latest_wrist;
+        std::atomic<bool> cam_stop{false};
+        std::thread cam_thread;
+        struct CamThreadGuard  // 任何路径退出(含异常)都先停线程, 再析构相机
+        {
+            std::atomic<bool>& stop;
+            std::thread& th;
+            ~CamThreadGuard()
+            {
+                stop.store(true);
+                if (th.joinable()) th.join();
+            }
+        } cam_guard{cam_stop, cam_thread};
+        if (!args.fake_cameras)
+        {
+            cam_thread = std::thread(
+                [&]
+                {
+                    if (args.show)
+                    {
+                        // WINDOW_NORMAL: 可用鼠标拖拽改窗口大小, 画面随窗口缩放
+                        cv::namedWindow("smolvla_deploy", cv::WINDOW_NORMAL | cv::WINDOW_KEEPRATIO);
+                        cv::resizeWindow("smolvla_deploy", 1280, 480);
+                    }
+                    while (!cam_stop.load())
+                    {
+                        cv::Mat p, w;
+                        try
+                        {
+                            p = rs_cam->Read();
+                            w = usb_cam->Read();
+                        }
+                        catch (const std::exception& e)
+                        {
+                            std::printf("[CAM] WARN: %s\n", e.what());
+                            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                            continue;
+                        }
+                        {
+                            std::lock_guard<std::mutex> lk(cam_mu);
+                            latest_primary = p;
+                            latest_wrist = w;
+                        }
+                        if (args.show)
+                        {
+                            cv::Mat canvas;
+                            cv::hconcat(p, w, canvas);
+                            cv::cvtColor(canvas, canvas, cv::COLOR_RGB2BGR);
+                            const cv::Scalar green(0, 255, 0);
+                            cv::putText(canvas, "primary (RealSense)", {10, 30},
+                                        cv::FONT_HERSHEY_SIMPLEX, 0.8, green, 2);
+                            cv::putText(canvas, "wrist (USB)", {p.cols + 10, 30},
+                                        cv::FONT_HERSHEY_SIMPLEX, 0.8, green, 2);
+                            cv::putText(canvas, "task: " + args.instruction, {10, canvas.rows - 15},
+                                        cv::FONT_HERSHEY_SIMPLEX, 0.8, green, 2);
+                            cv::imshow("smolvla_deploy", canvas);
+                            cv::waitKey(1);
+                        }
+                    }
+                });
+            // 等首帧到位
+            for (;;)
+            {
+                {
+                    std::lock_guard<std::mutex> lk(cam_mu);
+                    if (!latest_primary.empty() && !latest_wrist.empty()) break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+        }
+
         // 一切就绪, 释放启动保持, 交给模型控制
         if (arm) arm->StopHold();
 
@@ -603,8 +681,9 @@ int main(int argc, char** argv)
             cv::Mat rgb_primary, rgb_wrist;
             if (!args.fake_cameras)
             {
-                rgb_primary = rs_cam->Read();
-                rgb_wrist = usb_cam->Read();
+                std::lock_guard<std::mutex> lk(cam_mu);
+                rgb_primary = latest_primary;
+                rgb_wrist = latest_wrist;
             }
             else
             {
