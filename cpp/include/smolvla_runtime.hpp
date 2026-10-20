@@ -54,6 +54,8 @@ struct RuntimeConfig
     // 默认读 artifacts_dir/action_norm_stats.bin(由 export_action_stats.py 生成).
     bool unnormalize_action = true;
     std::string action_stats_path;
+    // 仅 SmolVLAFastRuntime 使用: denoise 引擎开 CUDA Graph(录制一次, 之后每步重放)
+    bool denoise_cuda_graph = true;
     ModelDims dims;
 };
 

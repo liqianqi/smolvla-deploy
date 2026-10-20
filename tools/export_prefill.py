@@ -1,19 +1,5 @@
 #!/usr/bin/env python
-"""把 SmolVLA 的 VLM prefill 导出为 ONNX(路线②第②步).
 
-prefill = 把 prefix 序列(图像emb + 语言emb + state)过 16 层文本 transformer,
-产出每一层的 KV cache,供后续 action expert 去噪时 cross-attention 读取.
-
-关键改造:原 vlm_with_expert.forward 把 KV cache 存成 Python dict
-{layer_idx: {"key_states":..., "value_states":...}},ONNX 无法表达.
-这里包一层,把 dict 堆叠成两个显式张量输出:
-    keys   (num_layers, B, L, n_kv_heads, head_dim)
-    values (num_layers, B, L, n_kv_heads, head_dim)
-未来 C++ 端就持有这两个张量,传给 denoise 引擎.
-
-示例输入(prefix_embs / attn_2d_mask / position_ids)直接从真实一帧观测跑
-embed_prefix 得到,保证形状正确.导出用 fp32 干净基线.
-"""
 
 from __future__ import annotations
 
@@ -30,12 +16,11 @@ from lerobot.policies.factory import make_pre_post_processors
 from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy, make_att_2d_masks
 from lerobot.utils.constants import OBS_LANGUAGE_ATTENTION_MASK, OBS_LANGUAGE_TOKENS
 
-DEFAULT_POLICY_PATH = Path(
-    "/home/ubuntu/smolvla/outputs/train/ela3_smolvla_v5_joint_sd/checkpoints/015000/pretrained_model"
-)
-DEFAULT_DATASET_ROOT = Path("/home/ubuntu/smolvla/data/ela3_lerobot_v2_joint")
-DEFAULT_REPO_ID = "local/ela3_blue_cube_v2_joint"
-DEFAULT_OUTPUT = Path("/home/ubuntu/smolvla/smolvla-deploy/artifacts/vlm_prefill.onnx")
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_POLICY_PATH = REPO_ROOT / "ela3_smolvla_new_dataset_v3/checkpoints/015000/pretrained_model"
+DEFAULT_DATASET_ROOT = Path("/home/ubuntu/smolvla/lerobot_dataset")
+DEFAULT_REPO_ID = "local/ela3_blue_block_new"
+DEFAULT_OUTPUT = REPO_ROOT / "artifacts" / "vlm_prefill.onnx"
 
 
 class PrefillWrapper(nn.Module):

@@ -1,19 +1,4 @@
 #!/usr/bin/env python
-"""离线 tokenize 语言指令, 导出为 C++ 部署程序可直接加载的二进制文件.
-
-与 Python 部署链路 (lerobot TokenizerProcessorStep + SmolVLANewLineProcessor) 完全一致:
-  1. 指令末尾加 "\\n"
-  2. SmolVLM2 tokenizer, max_length=48, padding=max_length, padding_side=right, truncation=True
-
-输出 lang_tokens.bin 布局 (little-endian):
-  [ int64 x 48 : token ids ][ uint8 x 48 : attention mask ]
-
-换指令时重新运行本脚本即可, C++ 侧无需改动.
-
-用法:
-  /home/ubuntu/AI/deploy_vla/.smolvla_venv/bin/python tools/export_lang_tokens.py \
-      --instruction "pick up the blue block"
-"""
 
 from __future__ import annotations
 

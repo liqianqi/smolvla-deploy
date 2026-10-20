@@ -12,10 +12,9 @@ from torch import nn
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
 
-DEFAULT_POLICY_PATH = Path(
-    "/home/ubuntu/smolvla/outputs/train/ela3_smolvla_v5_joint_sd/checkpoints/015000/pretrained_model"
-)
-DEFAULT_OUTPUT = Path("/home/ubuntu/smolvla/smolvla-deploy/artifacts/vision_encoder.onnx")
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_POLICY_PATH = REPO_ROOT / "ela3_smolvla_new_dataset_v3/checkpoints/015000/pretrained_model"
+DEFAULT_OUTPUT = REPO_ROOT / "artifacts" / "vision_encoder.onnx"
 
 
 class VisionEncoderWrapper(nn.Module):
@@ -88,7 +87,7 @@ def main() -> None:
     simplify_diff = float(torch.max(torch.abs(ref_out - orig_out)))
     print(f"      输出形状: {tuple(ref_out.shape)}  dtype={ref_out.dtype}")
     print(f"      简化(无mask) vs 原始(带mask)  max|diff|={simplify_diff:.3e}  "
-          f"({'等价 ✓' if simplify_diff < 1e-4 else '不等价 ✗'})")
+          f"({'等价' if simplify_diff < 1e-4 else '不等价 ✗'})")
 
     print(f"[3/4] 导出 ONNX({args.exporter} 导出器)-> {args.output}")
     with torch.inference_mode():

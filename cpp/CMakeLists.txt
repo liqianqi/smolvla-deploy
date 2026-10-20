@@ -9,13 +9,7 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "构建类型" FORCE)
 endif()
 
-# ============================================================================
-# 依赖开关(真实部署时按需打开;默认只依赖 ONNX Runtime,保证骨架能最小编译)
-# ============================================================================
-option(SMOLVLA_WITH_OPENCV        "用 OpenCV 做相机图像预处理(resize+pad+归一化)" OFF)
-option(SMOLVLA_WITH_TOKENIZERS    "用 tokenizers-cpp 做 SmolVLM2 tokenizer"        OFF)
-option(SMOLVLA_WITH_TENSORRT      "直接链接 TensorRT/CUDA runtime(阶段2 加载 .plan;ORT 的 TRT EP 无需此项)" OFF)
-option(SMOLVLA_WITH_DEPLOY        "构建实机部署程序 smolvla_deploy(OpenCV+librealsense2+robstride driver)" ON)
+option(SMOLVLA_WITH_DEPLOY "构建实机部署程序 smolvla_deploy*(OpenCV+librealsense2)" ON)
 
 # 目标平台探测:Jetson Orin 等 aarch64 用 NVIDIA 提供的 onnxruntime-gpu
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
@@ -68,110 +62,38 @@ else()
     "或把其目录加入 LD_LIBRARY_PATH.")
 endif()
 
-# ============================================================================
-# 目标
-# ============================================================================
-add_executable(smolvla_demo
-  src/main.cpp
-  src/smolvla_runtime.cpp
-)
+# 4 引擎优化版运行时(IO Binding 常驻显存 + 视觉合批 + 去噪 CUDA Graph)需要 CUDA runtime.
+find_package(CUDAToolkit REQUIRED)
 
-target_include_directories(smolvla_demo PRIVATE
-  ${CMAKE_CURRENT_SOURCE_DIR}/include
-)
-target_link_libraries(smolvla_demo PRIVATE onnxruntime::onnxruntime)
-
-# 运行时让加载器找到 onnxruntime(及其 TRT/CUDA EP)与 cuDNN 动态库.
+# 下面所有可执行文件都要让加载器找到 onnxruntime(及其 TRT/CUDA EP)与 cuDNN 动态库.
 # 用旧式 DT_RPATH(--disable-new-dtags)而非默认的 DT_RUNPATH:
 # EP(如 libonnxruntime_providers_tensorrt.so)是被 ORT 用 dlopen 加载的,
 # 其依赖(libcudnn.so.9)的解析只走可传递的 DT_RPATH,不走 DT_RUNPATH.
-set_target_properties(smolvla_demo PROPERTIES
+
+# ============================================================================
+# 2) 基准程序 smolvla_bench: 原版 vs 优化版运行时的耗时与数值对比
+# ============================================================================
+add_executable(smolvla_bench
+  src/bench_main.cpp
+  src/smolvla_runtime.cpp
+  src/smolvla_fast_runtime.cpp
+)
+target_include_directories(smolvla_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(smolvla_bench PRIVATE onnxruntime::onnxruntime CUDA::cudart)
+set_target_properties(smolvla_bench PROPERTIES
   BUILD_RPATH "${SMOLVLA_RPATH_DIRS}"
   INSTALL_RPATH "${SMOLVLA_RPATH_DIRS}")
-target_link_options(smolvla_demo PRIVATE "-Wl,--disable-new-dtags")
+target_link_options(smolvla_bench PRIVATE "-Wl,--disable-new-dtags")
 
 # ============================================================================
-# 2) OpenCV(可选)—— 相机帧 resize_with_pad 到 512x512 + 归一化到 [-1,1]
-#    Ubuntu/x64 : sudo apt install libopencv-dev  (或自编)
-#    Jetson     : JetPack 自带 OpenCV(如需 CUDA 加速版则自编)
-# ============================================================================
-if(SMOLVLA_WITH_OPENCV)
-  find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
-  message(STATUS "OpenCV: ${OpenCV_VERSION} (${OpenCV_INCLUDE_DIRS})")
-  target_link_libraries(smolvla_demo PRIVATE ${OpenCV_LIBS})
-  target_include_directories(smolvla_demo PRIVATE ${OpenCV_INCLUDE_DIRS})
-  target_compile_definitions(smolvla_demo PRIVATE SMOLVLA_WITH_OPENCV=1)
-endif()
-
-# ============================================================================
-# 3) tokenizers-cpp(可选)—— SmolVLM2 tokenizer 的 C++ 实现
-#    来源:https://github.com/mlc-ai/tokenizers-cpp(封装 HF Rust tokenizers)
-#    需要 Rust 工具链(cargo).克隆到 third_party/tokenizers-cpp(含子模块):
-#      git submodule add https://github.com/mlc-ai/tokenizers-cpp third_party/tokenizers-cpp
-#      git submodule update --init --recursive
-#    该子目录会导出 target: tokenizers_cpp
-# ============================================================================
-if(SMOLVLA_WITH_TOKENIZERS)
-  set(TOKENIZERS_CPP_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/tokenizers-cpp
-      CACHE PATH "tokenizers-cpp 源码目录")
-  if(NOT EXISTS ${TOKENIZERS_CPP_DIR}/CMakeLists.txt)
-    message(FATAL_ERROR
-      "SMOLVLA_WITH_TOKENIZERS=ON 但找不到 tokenizers-cpp(${TOKENIZERS_CPP_DIR}).\n"
-      "请先按 README 克隆 mlc-ai/tokenizers-cpp 到 third_party,或用 -DTOKENIZERS_CPP_DIR=... 指定.")
-  endif()
-  add_subdirectory(${TOKENIZERS_CPP_DIR} ${CMAKE_BINARY_DIR}/tokenizers-cpp EXCLUDE_FROM_ALL)
-  target_link_libraries(smolvla_demo PRIVATE tokenizers_cpp)
-  target_compile_definitions(smolvla_demo PRIVATE SMOLVLA_WITH_TOKENIZERS=1)
-endif()
-
-# ============================================================================
-# 4) TensorRT / CUDA runtime(可选)—— 仅在直接用 TRT C++ runtime 加载 .plan 时需要.
-#    通过 ONNX Runtime 的 TensorRT EP 推理(当前骨架的用法)时不需要打开:
-#    TRT/CUDA 由 ORT 以插件形式在运行时动态加载.
-#    x64  : find_package(CUDAToolkit) + 查找系统安装的 TensorRT.
-#    Orin : JetPack 自带 CUDA(/usr/local/cuda)与 TensorRT(/usr/lib/aarch64-linux-gnu).
-# ============================================================================
-if(SMOLVLA_WITH_TENSORRT)
-  find_package(CUDAToolkit REQUIRED)
-
-  find_path(TENSORRT_INCLUDE_DIR NvInfer.h
-    HINTS ${TENSORRT_ROOT} /usr/include/x86_64-linux-gnu /usr/include/aarch64-linux-gnu /usr/include
-    PATH_SUFFIXES include)
-  find_library(TENSORRT_NVINFER nvinfer
-    HINTS ${TENSORRT_ROOT} /usr/lib/x86_64-linux-gnu /usr/lib/aarch64-linux-gnu
-    PATH_SUFFIXES lib lib64)
-  find_library(TENSORRT_NVINFER_PLUGIN nvinfer_plugin
-    HINTS ${TENSORRT_ROOT} /usr/lib/x86_64-linux-gnu /usr/lib/aarch64-linux-gnu
-    PATH_SUFFIXES lib lib64)
-  find_library(TENSORRT_NVONNXPARSER nvonnxparser
-    HINTS ${TENSORRT_ROOT} /usr/lib/x86_64-linux-gnu /usr/lib/aarch64-linux-gnu
-    PATH_SUFFIXES lib lib64)
-
-  if(NOT TENSORRT_INCLUDE_DIR OR NOT TENSORRT_NVINFER)
-    message(FATAL_ERROR
-      "SMOLVLA_WITH_TENSORRT=ON 但找不到 TensorRT(NvInfer.h / libnvinfer).\n"
-      "请安装 TensorRT 或用 -DTENSORRT_ROOT=/path/to/TensorRT 指定.")
-  endif()
-  message(STATUS "TensorRT include: ${TENSORRT_INCLUDE_DIR}")
-
-  target_include_directories(smolvla_demo PRIVATE ${TENSORRT_INCLUDE_DIR})
-  target_link_libraries(smolvla_demo PRIVATE
-    CUDA::cudart
-    ${TENSORRT_NVINFER}
-    ${TENSORRT_NVINFER_PLUGIN}
-    ${TENSORRT_NVONNXPARSER})
-  target_compile_definitions(smolvla_demo PRIVATE SMOLVLA_WITH_TENSORRT=1)
-endif()
-
-# ============================================================================
-# 5) 实机部署 smolvla_deploy —— RealSense + USB 相机 + RobStride 电机 + ONNX 推理
+# 3) 实机部署 smolvla_deploy —— RealSense + USB 相机 + RobStride 电机 + ONNX 推理
 #    依赖:
 #      - OpenCV(系统 apt 版即可, 图像预处理 + USB 相机)
 #      - librealsense2(本机由 ROS Humble 提供: ros-humble-librealsense2)
 #    电机控制为自实现的 RobStride SocketCAN 协议(arm_ela3.cpp), 无外部驱动依赖.
 # ============================================================================
 if(SMOLVLA_WITH_DEPLOY)
-  find_package(OpenCV REQUIRED COMPONENTS core imgproc videoio)
+  find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs videoio highgui)
 
   # librealsense2: 优先系统安装, 其次 ROS Humble 自带的
   find_package(realsense2 REQUIRED
@@ -205,6 +127,54 @@ if(SMOLVLA_WITH_DEPLOY)
     INSTALL_RPATH "${SMOLVLA_DEPLOY_RPATH}")
   target_link_options(smolvla_deploy PRIVATE "-Wl,--disable-new-dtags")
   message(STATUS "smolvla_deploy: OpenCV=${OpenCV_VERSION} realsense2=${realsense2_VERSION}")
+
+  # 原始效果版: 模型输出原样执行, 不含任何偏置/滤波/错开(对照 smolvla_deploy 用)
+  add_executable(smolvla_deploy_raw
+    src/deploy_raw_main.cpp
+    src/smolvla_runtime.cpp
+    src/smolvla_fast_runtime.cpp
+    src/deploy_camera.cpp
+    src/image_preproc.cpp
+    src/arm_ela3.cpp
+  )
+  target_include_directories(smolvla_deploy_raw PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${OpenCV_INCLUDE_DIRS}
+  )
+  target_link_libraries(smolvla_deploy_raw PRIVATE
+    onnxruntime::onnxruntime
+    realsense2::realsense2
+    ${OpenCV_LIBS}
+    Threads::Threads
+    CUDA::cudart
+  )
+  set_target_properties(smolvla_deploy_raw PROPERTIES
+    BUILD_RPATH "${SMOLVLA_DEPLOY_RPATH}"
+    INSTALL_RPATH "${SMOLVLA_DEPLOY_RPATH}")
+  target_link_options(smolvla_deploy_raw PRIVATE "-Wl,--disable-new-dtags")
+
+  # 单图 ONNX 版: 与 smolvla_deploy_raw 相同的执行逻辑, 推理走 smolvla_full.onnx(tools/export_full_onnx.py)
+  add_executable(smolvla_deploy_full
+    src/deploy_full_main.cpp
+    src/smolvla_full_runtime.cpp
+    src/deploy_camera.cpp
+    src/image_preproc.cpp
+    src/arm_ela3.cpp
+  )
+  target_include_directories(smolvla_deploy_full PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${OpenCV_INCLUDE_DIRS}
+  )
+  target_link_libraries(smolvla_deploy_full PRIVATE
+    onnxruntime::onnxruntime
+    realsense2::realsense2
+    ${OpenCV_LIBS}
+    Threads::Threads
+  )
+  set_target_properties(smolvla_deploy_full PROPERTIES
+    BUILD_RPATH "${SMOLVLA_DEPLOY_RPATH}"
+    INSTALL_RPATH "${SMOLVLA_DEPLOY_RPATH}")
+  target_link_options(smolvla_deploy_full PRIVATE "-Wl,--disable-new-dtags")
 endif()
 
 # ============================================================================
@@ -212,10 +182,8 @@ endif()
 # ============================================================================
 message(STATUS "================ smolvla_cpp 配置摘要 ================")
 message(STATUS "  目标平台        : ${CMAKE_SYSTEM_PROCESSOR} (Jetson=${SMOLVLA_TARGET_JETSON})")
-  message(STATUS "  ONNX Runtime    : ${ONNXRUNTIME_ROOT}")
-  message(STATUS "  cuDNN lib       : ${CUDNN_LIB_DIR}")
-  message(STATUS "  OpenCV          : ${SMOLVLA_WITH_OPENCV}")
-message(STATUS "  tokenizers-cpp  : ${SMOLVLA_WITH_TOKENIZERS}")
-message(STATUS "  TensorRT runtime: ${SMOLVLA_WITH_TENSORRT}")
+message(STATUS "  ONNX Runtime    : ${ONNXRUNTIME_ROOT}")
+message(STATUS "  cuDNN lib       : ${CUDNN_LIB_DIR}")
+message(STATUS "  CUDA toolkit    : ${CUDAToolkit_VERSION}")
 message(STATUS "  实机部署 deploy : ${SMOLVLA_WITH_DEPLOY}")
 message(STATUS "======================================================")

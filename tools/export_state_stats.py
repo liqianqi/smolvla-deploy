@@ -1,13 +1,5 @@
 #!/usr/bin/env python
-"""导出 observation.state 的归一化统计量 (mean/std) 为二进制文件, 供 C++ 部署程序加载.
 
-state 用 MEAN_STD 归一化: norm = (state - mean) / (std + eps), eps=1e-8.
-输出 state_norm_stats.bin 布局 (全部 float32, little-endian):
-    [ mean[0..D-1], std[0..D-1] ]   其中 D = 7 ([J1..J6, gripper_open])
-
-用法:
-  /home/ubuntu/AI/deploy_vla/.smolvla_venv/bin/python tools/export_state_stats.py
-"""
 
 from __future__ import annotations
 
@@ -17,11 +9,12 @@ from pathlib import Path
 
 from safetensors import safe_open
 
-DEFAULT_STATS = Path(
-    "/home/ubuntu/AI/deploy_vla/020000/pretrained_model/"
-    "policy_preprocessor_step_5_normalizer_processor.safetensors"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_STATS = (
+    REPO_ROOT / "ela3_smolvla_new_dataset_v3/checkpoints/015000/pretrained_model"
+    / "policy_preprocessor_step_5_normalizer_processor.safetensors"
 )
-DEFAULT_OUTPUT = Path(__file__).resolve().parent.parent / "artifacts" / "state_norm_stats.bin"
+DEFAULT_OUTPUT = REPO_ROOT / "artifacts" / "state_norm_stats.bin"
 
 
 def main() -> None:

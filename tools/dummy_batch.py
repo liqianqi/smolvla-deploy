@@ -1,10 +1,3 @@
-"""导出用的一帧观测:有本地数据集就读第 0 帧,否则按 checkpoint 合成 dummy.
-
-LeRobotDataset 在 root 里没有 meta/ 时会去 HuggingFace 拉 repo_id.
-local/* 不是 Hub 上的仓库,会变成 401 RepositoryNotFoundError.
-导出只需要正确形状的 dummy 张量,权重来自 checkpoint,不依赖真实图像内容.
-"""
-
 from __future__ import annotations
 
 import json
